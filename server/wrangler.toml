@@ -3,6 +3,11 @@ main = "src/worker.js"
 compatibility_date = "2025-01-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Static assets (frontend)
+[assets]
+directory = "../client/dist"
+binding = "ASSETS"
+
 # D1 Database binding
 [[d1_databases]]
 binding = "DB"

@@ -51,6 +51,15 @@ export default {
     }
 
     if (!fullPath.startsWith('/api/')) {
+      if (env.ASSETS) {
+        let assetResponse = await env.ASSETS.fetch(request);
+        if (assetResponse.status === 404) {
+          const indexRequest = new URL(request.url);
+          indexRequest.pathname = '/index.html';
+          assetResponse = await env.ASSETS.fetch(new Request(indexRequest.toString(), request));
+        }
+        return assetResponse;
+      }
       return json({ error: 'Not found' }, 404);
     }
 
