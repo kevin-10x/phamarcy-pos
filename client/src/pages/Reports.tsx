@@ -37,60 +37,37 @@ import { get } from '../utils/api'
 type Tab = 'sales' | 'inventory' | 'financial' | 'cash'
 
 interface SalesReportData {
-  summary: {
-    total_revenue: number
-    total_sales: number
-    average_sale: number
-    total_vat: number
-  }
-  chart_data: { period: string; revenue: number; sales: number }[]
-  breakdown: { period: string; sales_count: number; revenue: number; vat: number; avg: number }[]
+  start_date: string
+  end_date: string
+  sales_by_day: { date: string; count: number; revenue: number; discounts: number }[]
+  sales_by_payment: { payment_method: string; count: number; total: number }[]
+  sales_by_user: { full_name: string; count: number; revenue: number }[]
+  top_medicines: { brand_name: string; quantity_sold: number; revenue: number }[]
 }
 
 interface InventoryReportData {
-  category_breakdown: { name: string; value: number; count: number }[]
-  stock_list: {
-    id: number
-    brand_name: string
-    generic_name: string
-    category_name: string
-    current_stock: number
-    unit: string
-    purchase_price: number
-    selling_price: number
-    total_value: number
-  }[]
-  summary: {
-    total_medicines: number
-    total_stock_value: number
-    low_stock_count: number
-    expiring_soon_count: number
-  }
+  stock_by_category: { category_name: string; medicine_count: number; total_stock: number; stock_value: number }[]
+  low_stock_items: { id: number; brand_name: string; barcode: string; current_stock: number }[]
+  expiring_items: any[]
 }
 
 interface FinancialReportData {
-  summary: {
-    total_revenue: number
-    total_cost: number
-    total_expenses: number
-    gross_profit: number
-    net_profit: number
-  }
-  monthly_data: { month: string; revenue: number; cost: number; expenses: number }[]
-  expenses_by_category: { category: string; amount: number }[]
+  start_date: string
+  end_date: string
+  revenue: number
+  cost_of_goods: number
+  gross_profit: number
+  expenses: number
+  net_profit: number
+  gross_margin: string
+  net_margin: string
 }
 
 interface CashSummaryData {
-  today_breakdown: {
-    cash: number
-    mpesa: number
-    card: number
-    insurance: number
-    credit: number
-  }
-  net_cash_position: number
-  total_transactions: number
-  chart_data: { method: string; amount: number; count: number }[]
+  start_date: string
+  end_date: string
+  methods: { payment_method: string; transaction_count: number; total_received: number; total_sales: number }[]
+  grand_total: number
 }
 
 const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4']
@@ -160,7 +137,7 @@ function SalesReport({ loading, setLoading }: { loading: boolean; setLoading: (v
     setLoading(true)
     try {
       const params = `?period=${period}&start_date=${startDate}&end_date=${endDate}`
-      const res = await get<SalesReportData>(`/reports/sales${params}`)
+      const res = await get<SalesReportData>(`/reports/sales-report${params}`)
       setData(res)
     } catch {
       toast.error('Failed to load sales report')
@@ -217,18 +194,12 @@ function SalesReport({ loading, setLoading }: { loading: boolean; setLoading: (v
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {[
-              { label: 'Total Revenue', value: formatKSh(data.summary.total_revenue), icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-              { label: 'Total Sales', value: data.summary.total_sales.toString(), icon: BarChart3, color: 'text-blue-600', bg: 'bg-blue-50' },
-              { label: 'Average Sale', value: formatKSh(data.summary.average_sale), icon: TrendingUp, color: 'text-purple-600', bg: 'bg-purple-50' },
-              { label: 'Total VAT', value: formatKSh(data.summary.total_vat), icon: Receipt, color: 'text-orange-600', bg: 'bg-orange-50' },
+              { label: 'Total Revenue', value: formatKSh(data.sales_by_day.reduce((sum, d) => sum + d.revenue, 0)), icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+              { label: 'Total Sales', value: data.sales_by_day.reduce((sum, d) => sum + d.count, 0).toString(), icon: BarChart3, color: 'text-blue-600', bg: 'bg-blue-50' },
+              { label: 'Total Discounts', value: formatKSh(data.sales_by_day.reduce((sum, d) => sum + d.discounts, 0)), icon: TrendingDown, color: 'text-orange-600', bg: 'bg-orange-50' },
+              { label: 'Avg Daily Revenue', value: formatKSh(data.sales_by_day.length ? data.sales_by_day.reduce((sum, d) => sum + d.revenue, 0) / data.sales_by_day.length : 0), icon: TrendingUp, color: 'text-purple-600', bg: 'bg-purple-50' },
             ].map((card, i) => (
-              <motion.div
-                key={card.label}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.1 }}
-                className="bg-white rounded-xl border border-gray-200 p-5"
-              >
+              <motion.div key={card.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="bg-white rounded-xl border border-gray-200 p-5">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-gray-500">{card.label}</p>
@@ -246,17 +217,14 @@ function SalesReport({ loading, setLoading }: { loading: boolean; setLoading: (v
             <div className="bg-white rounded-xl border border-gray-200 p-5">
               <h3 className="font-semibold text-gray-900 mb-4">Revenue Over Time</h3>
               <ResponsiveContainer width="100%" height={320}>
-                <LineChart data={data.chart_data}>
+                <LineChart data={data.sales_by_day}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
-                  <XAxis dataKey="period" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    formatter={(value: number) => [formatKSh(value), 'Revenue']}
-                    contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: '12px' }}
-                  />
+                  <Tooltip formatter={(value: number) => [formatKSh(value), 'Revenue']} contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: '12px' }} />
                   <Legend />
                   <Line type="monotone" dataKey="revenue" stroke="#10b981" strokeWidth={2} dot={{ fill: '#10b981', r: 4 }} name="Revenue" />
-                  <Line type="monotone" dataKey="sales" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 4 }} name="Sales Count" />
+                  <Line type="monotone" dataKey="count" stroke="#3b82f6" strokeWidth={2} dot={{ fill: '#3b82f6', r: 4 }} name="Sales Count" />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -265,7 +233,7 @@ function SalesReport({ loading, setLoading }: { loading: boolean; setLoading: (v
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
               <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-                <h3 className="font-semibold text-gray-900">Period Breakdown</h3>
+                <h3 className="font-semibold text-gray-900">Daily Breakdown</h3>
                 <button className="flex items-center gap-1.5 text-sm text-emerald-600 hover:text-emerald-700">
                   <Download className="w-4 h-4" />
                   Export
@@ -275,21 +243,103 @@ function SalesReport({ loading, setLoading }: { loading: boolean; setLoading: (v
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="bg-gray-50 text-left text-gray-600">
-                      <th className="px-5 py-2.5 font-medium">Period</th>
+                      <th className="px-5 py-2.5 font-medium">Date</th>
                       <th className="px-5 py-2.5 font-medium text-right">Sales</th>
                       <th className="px-5 py-2.5 font-medium text-right">Revenue</th>
-                      <th className="px-5 py-2.5 font-medium text-right">VAT</th>
-                      <th className="px-5 py-2.5 font-medium text-right">Avg</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Discounts</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {data.breakdown.map((row, i) => (
+                    {data.sales_by_day.map((row, i) => (
                       <tr key={i} className="hover:bg-gray-50">
-                        <td className="px-5 py-2.5 font-medium text-gray-900">{row.period}</td>
-                        <td className="px-5 py-2.5 text-right text-gray-600">{row.sales_count}</td>
+                        <td className="px-5 py-2.5 font-medium text-gray-900">{formatDate(row.date)}</td>
+                        <td className="px-5 py-2.5 text-right text-gray-600">{row.count}</td>
                         <td className="px-5 py-2.5 text-right font-medium text-gray-900">{formatKSh(row.revenue)}</td>
-                        <td className="px-5 py-2.5 text-right text-gray-600">{formatKSh(row.vat)}</td>
-                        <td className="px-5 py-2.5 text-right text-gray-600">{formatKSh(row.avg)}</td>
+                        <td className="px-5 py-2.5 text-right text-gray-600">{formatKSh(row.discounts)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </motion.div>
+
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                <h3 className="font-semibold text-gray-900">Top Medicines</h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 text-left text-gray-600">
+                      <th className="px-5 py-2.5 font-medium">Medicine</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Qty Sold</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Revenue</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {data.top_medicines.map((med, i) => (
+                      <tr key={i} className="hover:bg-gray-50">
+                        <td className="px-5 py-2.5 font-medium text-gray-900">{med.brand_name}</td>
+                        <td className="px-5 py-2.5 text-right text-gray-600">{med.quantity_sold}</td>
+                        <td className="px-5 py-2.5 text-right font-medium text-gray-900">{formatKSh(med.revenue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </motion.div>
+
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}>
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                <h3 className="font-semibold text-gray-900">By Payment Method</h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 text-left text-gray-600">
+                      <th className="px-5 py-2.5 font-medium">Method</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Count</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Total</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {data.sales_by_payment.map((pm, i) => (
+                      <tr key={i} className="hover:bg-gray-50">
+                        <td className="px-5 py-2.5 font-medium text-gray-900 capitalize">{pm.payment_method}</td>
+                        <td className="px-5 py-2.5 text-right text-gray-600">{pm.count}</td>
+                        <td className="px-5 py-2.5 text-right font-medium text-gray-900">{formatKSh(pm.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </motion.div>
+
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                <h3 className="font-semibold text-gray-900">By Cashier</h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-gray-50 text-left text-gray-600">
+                      <th className="px-5 py-2.5 font-medium">Cashier</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Sales</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Revenue</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {data.sales_by_user.map((u, i) => (
+                      <tr key={i} className="hover:bg-gray-50">
+                        <td className="px-5 py-2.5 font-medium text-gray-900">{u.full_name}</td>
+                        <td className="px-5 py-2.5 text-right text-gray-600">{u.count}</td>
+                        <td className="px-5 py-2.5 text-right font-medium text-gray-900">{formatKSh(u.revenue)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -310,7 +360,7 @@ function InventoryReport({ loading, setLoading }: { loading: boolean; setLoading
     const fetchInventoryReport = async () => {
       setLoading(true)
       try {
-        const res = await get<InventoryReportData>('/reports/inventory')
+        const res = await get<InventoryReportData>('/reports/inventory-report')
         setData(res)
       } catch {
         toast.error('Failed to load inventory report')
@@ -331,18 +381,12 @@ function InventoryReport({ loading, setLoading }: { loading: boolean; setLoading
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {[
-              { label: 'Total Medicines', value: data.summary.total_medicines.toString(), icon: Package, color: 'text-blue-600', bg: 'bg-blue-50' },
-              { label: 'Stock Value', value: formatKSh(data.summary.total_stock_value), icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50' },
-              { label: 'Low Stock Items', value: data.summary.low_stock_count.toString(), icon: TrendingDown, color: 'text-orange-600', bg: 'bg-orange-50' },
-              { label: 'Expiring Soon', value: data.summary.expiring_soon_count.toString(), icon: Clock, color: 'text-red-600', bg: 'bg-red-50' },
+              { label: 'Total Categories', value: data.stock_by_category.length.toString(), icon: Package, color: 'text-blue-600', bg: 'bg-blue-50' },
+              { label: 'Total Stock Value', value: formatKSh(data.stock_by_category.reduce((sum, c) => sum + c.stock_value, 0)), icon: DollarSign, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+              { label: 'Low Stock Items', value: data.low_stock_items.length.toString(), icon: TrendingDown, color: 'text-orange-600', bg: 'bg-orange-50' },
+              { label: 'Expiring Soon', value: data.expiring_items.length.toString(), icon: Clock, color: 'text-red-600', bg: 'bg-red-50' },
             ].map((card, i) => (
-              <motion.div
-                key={card.label}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.1 }}
-                className="bg-white rounded-xl border border-gray-200 p-5"
-              >
+              <motion.div key={card.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="bg-white rounded-xl border border-gray-200 p-5">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-gray-500">{card.label}</p>
@@ -360,29 +404,17 @@ function InventoryReport({ loading, setLoading }: { loading: boolean; setLoading
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
               <div className="bg-white rounded-xl border border-gray-200 p-5">
                 <h3 className="font-semibold text-gray-900 mb-4">Category Breakdown</h3>
-                {data.category_breakdown.length === 0 ? (
+                {data.stock_by_category.length === 0 ? (
                   <p className="text-sm text-gray-500 text-center py-8">No category data available</p>
                 ) : (
                   <ResponsiveContainer width="100%" height={300}>
                     <PieChart>
-                      <Pie
-                        data={data.category_breakdown}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={110}
-                        paddingAngle={4}
-                        dataKey="value"
-                        nameKey="name"
-                      >
-                        {data.category_breakdown.map((_, index) => (
+                      <Pie data={data.stock_by_category} cx="50%" cy="50%" innerRadius={60} outerRadius={110} paddingAngle={4} dataKey="stock_value" nameKey="category_name">
+                        {data.stock_by_category.map((_, index) => (
                           <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                         ))}
                       </Pie>
-                      <Tooltip
-                        formatter={(value: number) => [formatKSh(value), 'Value']}
-                        contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', fontSize: '12px' }}
-                      />
+                      <Tooltip formatter={(value: number) => [formatKSh(value), 'Value']} contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', fontSize: '12px' }} />
                       <Legend />
                     </PieChart>
                   </ResponsiveContainer>
@@ -394,16 +426,16 @@ function InventoryReport({ loading, setLoading }: { loading: boolean; setLoading
               <div className="bg-white rounded-xl border border-gray-200 p-5">
                 <h3 className="font-semibold text-gray-900 mb-4">Category Details</h3>
                 <div className="space-y-3">
-                  {data.category_breakdown.map((cat, i) => (
-                    <div key={cat.name} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                  {data.stock_by_category.map((cat, i) => (
+                    <div key={cat.category_name} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                       <div className="flex items-center gap-3">
                         <div className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[i % COLORS.length] }} />
                         <div>
-                          <p className="text-sm font-medium text-gray-900">{cat.name}</p>
-                          <p className="text-xs text-gray-500">{cat.count} items</p>
+                          <p className="text-sm font-medium text-gray-900">{cat.category_name}</p>
+                          <p className="text-xs text-gray-500">{cat.medicine_count} items · {cat.total_stock} units</p>
                         </div>
                       </div>
-                      <p className="text-sm font-semibold text-gray-900">{formatKSh(cat.value)}</p>
+                      <p className="text-sm font-semibold text-gray-900">{formatKSh(cat.stock_value)}</p>
                     </div>
                   ))}
                 </div>
@@ -414,7 +446,7 @@ function InventoryReport({ loading, setLoading }: { loading: boolean; setLoading
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
             <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
               <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
-                <h3 className="font-semibold text-gray-900">Full Stock List</h3>
+                <h3 className="font-semibold text-gray-900">Low Stock Items</h3>
                 <button className="flex items-center gap-1.5 text-sm text-emerald-600 hover:text-emerald-700">
                   <Download className="w-4 h-4" />
                   Export CSV
@@ -425,29 +457,50 @@ function InventoryReport({ loading, setLoading }: { loading: boolean; setLoading
                   <thead className="sticky top-0 bg-gray-50">
                     <tr className="text-left text-gray-600">
                       <th className="px-5 py-2.5 font-medium">Medicine</th>
-                      <th className="px-5 py-2.5 font-medium">Category</th>
-                      <th className="px-5 py-2.5 font-medium text-right">Stock</th>
-                      <th className="px-5 py-2.5 font-medium text-right">Purchase</th>
-                      <th className="px-5 py-2.5 font-medium text-right">Selling</th>
-                      <th className="px-5 py-2.5 font-medium text-right">Total Value</th>
+                      <th className="px-5 py-2.5 font-medium">Barcode</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Current Stock</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-100">
-                    {data.stock_list.map((item) => (
+                    {data.low_stock_items.map((item) => (
                       <tr key={item.id} className="hover:bg-gray-50">
-                        <td className="px-5 py-2.5">
-                          <div className="font-medium text-gray-900">{item.brand_name}</div>
-                          <div className="text-xs text-gray-500">{item.generic_name}</div>
-                        </td>
-                        <td className="px-5 py-2.5 text-gray-600">{item.category_name}</td>
+                        <td className="px-5 py-2.5 font-medium text-gray-900">{item.brand_name}</td>
+                        <td className="px-5 py-2.5 text-gray-600">{item.barcode}</td>
                         <td className="px-5 py-2.5 text-right">
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${item.current_stock <= 10 ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
-                            {item.current_stock} {item.unit}
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${item.current_stock <= 10 ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                            {item.current_stock}
                           </span>
                         </td>
-                        <td className="px-5 py-2.5 text-right text-gray-600">{formatKSh(item.purchase_price)}</td>
-                        <td className="px-5 py-2.5 text-right text-gray-600">{formatKSh(item.selling_price)}</td>
-                        <td className="px-5 py-2.5 text-right font-medium text-gray-900">{formatKSh(item.total_value)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </motion.div>
+
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.5 }}>
+            <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
+                <h3 className="font-semibold text-gray-900">Expiring Items</h3>
+              </div>
+              <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+                <table className="w-full text-sm">
+                  <thead className="sticky top-0 bg-gray-50">
+                    <tr className="text-left text-gray-600">
+                      <th className="px-5 py-2.5 font-medium">Medicine</th>
+                      <th className="px-5 py-2.5 font-medium">Batch</th>
+                      <th className="px-5 py-2.5 font-medium">Expiry Date</th>
+                      <th className="px-5 py-2.5 font-medium text-right">Stock</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {data.expiring_items.map((item, i) => (
+                      <tr key={i} className="hover:bg-gray-50">
+                        <td className="px-5 py-2.5 font-medium text-gray-900">{item.brand_name}</td>
+                        <td className="px-5 py-2.5 text-gray-600">{item.batch_number}</td>
+                        <td className="px-5 py-2.5 text-red-600 font-medium">{new Date(item.expiry_date).toLocaleDateString('en-KE')}</td>
+                        <td className="px-5 py-2.5 text-right text-gray-600">{item.quantity}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -474,7 +527,7 @@ function FinancialReport({ loading, setLoading }: { loading: boolean; setLoading
     const fetchFinancialReport = async () => {
       setLoading(true)
       try {
-        const res = await get<FinancialReportData>(`/reports/financial?start_date=${startDate}&end_date=${endDate}`)
+        const res = await get<FinancialReportData>(`/reports/financial-report?start_date=${startDate}&end_date=${endDate}`)
         setData(res)
       } catch {
         toast.error('Failed to load financial report')
@@ -490,20 +543,10 @@ function FinancialReport({ loading, setLoading }: { loading: boolean; setLoading
       <div className="flex gap-3 items-center justify-end">
         <div className="flex items-center gap-2">
           <Calendar className="w-4 h-4 text-gray-400" />
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
-          />
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
         </div>
         <span className="text-gray-400 text-sm">to</span>
-        <input
-          type="date"
-          value={endDate}
-          onChange={(e) => setEndDate(e.target.value)}
-          className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
-        />
+        <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border border-gray-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none" />
       </div>
 
       {loading ? (
@@ -514,19 +557,13 @@ function FinancialReport({ loading, setLoading }: { loading: boolean; setLoading
         <>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             {[
-              { label: 'Total Revenue', value: formatKSh(data.summary.total_revenue), color: 'text-emerald-600', bg: 'bg-emerald-50', icon: DollarSign },
-              { label: 'Total Cost', value: formatKSh(data.summary.total_cost), color: 'text-blue-600', bg: 'bg-blue-50', icon: TrendingDown },
-              { label: 'Total Expenses', value: formatKSh(data.summary.total_expenses), color: 'text-orange-600', bg: 'bg-orange-50', icon: Receipt },
-              { label: 'Gross Profit', value: formatKSh(data.summary.gross_profit), color: 'text-purple-600', bg: 'bg-purple-50', icon: TrendingUp },
-              { label: 'Net Profit', value: formatKSh(data.summary.net_profit), color: data.summary.net_profit >= 0 ? 'text-emerald-600' : 'text-red-600', bg: data.summary.net_profit >= 0 ? 'bg-emerald-50' : 'bg-red-50', icon: data.summary.net_profit >= 0 ? TrendingUp : TrendingDown },
+              { label: 'Total Revenue', value: formatKSh(data.revenue), color: 'text-emerald-600', bg: 'bg-emerald-50', icon: DollarSign },
+              { label: 'Total Cost', value: formatKSh(data.cost_of_goods), color: 'text-blue-600', bg: 'bg-blue-50', icon: TrendingDown },
+              { label: 'Total Expenses', value: formatKSh(data.expenses), color: 'text-orange-600', bg: 'bg-orange-50', icon: Receipt },
+              { label: 'Gross Profit', value: formatKSh(data.gross_profit), color: 'text-purple-600', bg: 'bg-purple-50', icon: TrendingUp },
+              { label: 'Net Profit', value: formatKSh(data.net_profit), color: data.net_profit >= 0 ? 'text-emerald-600' : 'text-red-600', bg: data.net_profit >= 0 ? 'bg-emerald-50' : 'bg-red-50', icon: data.net_profit >= 0 ? TrendingUp : TrendingDown },
             ].map((card, i) => (
-              <motion.div
-                key={card.label}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.1 }}
-                className="bg-white rounded-xl border border-gray-200 p-5"
-              >
+              <motion.div key={card.label} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="bg-white rounded-xl border border-gray-200 p-5">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-gray-500">{card.label}</p>
@@ -545,14 +582,11 @@ function FinancialReport({ loading, setLoading }: { loading: boolean; setLoading
               <div className="bg-white rounded-xl border border-gray-200 p-5">
                 <h3 className="font-semibold text-gray-900 mb-4">Revenue vs Cost vs Expenses</h3>
                 <ResponsiveContainer width="100%" height={320}>
-                  <BarChart data={data.monthly_data}>
+                  <BarChart data={[{ month: startDate.slice(0, 7), revenue: data.revenue, cost: data.cost_of_goods, expenses: data.expenses }]}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
                     <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
                     <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                    <Tooltip
-                      formatter={(value: number, name: string) => [formatKSh(value), name.charAt(0).toUpperCase() + name.slice(1)]}
-                      contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: '12px' }}
-                    />
+                    <Tooltip formatter={(value: number, name: string) => [formatKSh(value), name.charAt(0).toUpperCase() + name.slice(1)]} contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: '12px' }} />
                     <Legend />
                     <Bar dataKey="revenue" fill="#10b981" radius={[4, 4, 0, 0]} name="Revenue" />
                     <Bar dataKey="cost" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Cost" />
@@ -564,31 +598,17 @@ function FinancialReport({ loading, setLoading }: { loading: boolean; setLoading
 
             <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
               <div className="bg-white rounded-xl border border-gray-200 p-5">
-                <h3 className="font-semibold text-gray-900 mb-4">Expenses by Category</h3>
-                {data.expenses_by_category.length === 0 ? (
-                  <p className="text-sm text-gray-500 text-center py-8">No expenses recorded</p>
-                ) : (
-                  <div className="space-y-3">
-                    {data.expenses_by_category.map((exp, i) => {
-                      const maxAmount = Math.max(...data.expenses_by_category.map((e) => e.amount))
-                      const pct = maxAmount > 0 ? (exp.amount / maxAmount) * 100 : 0
-                      return (
-                        <div key={exp.category}>
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm font-medium text-gray-700">{exp.category}</span>
-                            <span className="text-sm font-semibold text-gray-900">{formatKSh(exp.amount)}</span>
-                          </div>
-                          <div className="w-full bg-gray-100 rounded-full h-2">
-                            <div
-                              className="h-2 rounded-full transition-all duration-500"
-                              style={{ width: `${pct}%`, backgroundColor: COLORS[i % COLORS.length] }}
-                            />
-                          </div>
-                        </div>
-                      )
-                    })}
+                <h3 className="font-semibold text-gray-900 mb-4">Margins</h3>
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-sm text-gray-500">Gross Margin</p>
+                    <p className="text-2xl font-bold text-emerald-600">{data.gross_margin}%</p>
                   </div>
-                )}
+                  <div>
+                    <p className="text-sm text-gray-500">Net Margin</p>
+                    <p className="text-2xl font-bold text-blue-600">{data.net_margin}%</p>
+                  </div>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -640,35 +660,28 @@ function CashSummary({ loading, setLoading }: { loading: boolean; setLoading: (v
                 </div>
                 <div>
                   <p className="text-sm text-emerald-100">Net Cash Position</p>
-                  <p className="text-3xl font-bold">{formatKSh(data.net_cash_position)}</p>
+                  <p className="text-3xl font-bold">{formatKSh(data.grand_total)}</p>
                 </div>
               </div>
               <div className="mt-3 flex items-center gap-2 text-sm text-emerald-100">
                 <FileText className="w-4 h-4" />
-                <span>{data.total_transactions} transactions today</span>
+                <span>{data.methods.reduce((sum, m) => sum + m.transaction_count, 0)} transactions</span>
               </div>
             </div>
           </motion.div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
             {paymentMethods.map((method, i) => {
-              const amount = data.today_breakdown[method.key as keyof typeof data.today_breakdown] || 0
-              const chartEntry = data.chart_data.find((c) => c.method.toLowerCase() === method.key)
+              const methodData = data.methods.find((m) => m.payment_method.toLowerCase() === method.key)
+              const amount = methodData?.total_received || 0
+              const count = methodData?.transaction_count || 0
               return (
-                <motion.div
-                  key={method.key}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: i * 0.1 }}
-                  className="bg-white rounded-xl border border-gray-200 p-5"
-                >
+                <motion.div key={method.key} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.1 }} className="bg-white rounded-xl border border-gray-200 p-5">
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-sm text-gray-500">{method.label}</p>
                       <p className="text-lg font-bold text-gray-900 mt-1">{formatKSh(amount)}</p>
-                      {chartEntry && (
-                        <p className="text-xs text-gray-400 mt-0.5">{chartEntry.count} txns</p>
-                      )}
+                      <p className="text-xs text-gray-400 mt-0.5">{count} txns</p>
                     </div>
                     <div className={`${method.bg} rounded-lg p-2.5`}>
                       <method.icon className={`w-5 h-5 ${method.color}`} />
@@ -683,14 +696,11 @@ function CashSummary({ loading, setLoading }: { loading: boolean; setLoading: (v
             <div className="bg-white rounded-xl border border-gray-200 p-5">
               <h3 className="font-semibold text-gray-900 mb-4">Payment Methods Breakdown</h3>
               <ResponsiveContainer width="100%" height={320}>
-                <BarChart data={data.chart_data}>
+                <BarChart data={data.methods.map((m) => ({ method: m.payment_method, amount: m.total_received, count: m.transaction_count }))}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
                   <XAxis dataKey="method" tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: '#6b7280' }} axisLine={false} tickLine={false} />
-                  <Tooltip
-                    formatter={(value: number, name: string) => [name === 'amount' ? formatKSh(value) : value, name === 'amount' ? 'Amount' : 'Transactions']}
-                    contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: '12px' }}
-                  />
+                  <Tooltip formatter={(value: number, name: string) => [name === 'amount' ? formatKSh(value) : value, name === 'amount' ? 'Amount' : 'Transactions']} contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', fontSize: '12px' }} />
                   <Legend />
                   <Bar dataKey="amount" fill="#10b981" radius={[4, 4, 0, 0]} name="Amount" />
                   <Bar dataKey="count" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Transactions" />
