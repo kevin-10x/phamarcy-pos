@@ -1,231 +1,326 @@
-import { Router } from 'express';
-import db from '../database/connection.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { first, all, run, json, authenticate } from '../utils/d1.js';
 
-const router = Router();
+export async function posRoutes(request, env, path, db) {
+  const parts = path.split('/').filter(Boolean);
+  const method = request.method;
+  const segment = parts[0] || '';
+  const url = new URL(request.url);
+  const searchParams = url.searchParams;
 
-router.post('/sale', authenticateToken, (req, res) => {
-  try {
-    const { customer_id, items, payment_method, amount_paid, discount_amount, prescription_id, notes } = req.body;
-    if (!items || items.length === 0) {
-      return res.status(400).json({ error: 'No items in sale' });
+  if (method === 'POST' && segment === 'sale') {
+    const authUser = await authenticate(request, env);
+    if (!authUser) {
+      return json({ error: 'Unauthorized' }, 401);
     }
+
+    const body = await request.json().catch(() => ({}));
+    const { items, customer_id, prescription_id, payment_method, discount_amount, vat_amount, notes, amount_paid, branch_id, loyalty_points_redeemed } = body;
+
+    if (!items || !Array.isArray(items) || items.length === 0) {
+      return json({ error: 'Items array is required' }, 400);
+    }
+
+    const now = new Date().toISOString();
 
     let subtotal = 0;
-    let vatAmount = 0;
+    const saleItemsData = [];
 
-    const validatedItems = [];
     for (const item of items) {
-      const medicine = db.prepare('SELECT * FROM medicines WHERE id = ?').get(item.medicine_id);
-      if (!medicine) return res.status(404).json({ error: `Medicine ${item.medicine_id} not found` });
-
-      // Find batch using FEFO (First Expiry First Out)
-      const batch = db.prepare(`
-        SELECT * FROM batches WHERE medicine_id = ? AND status = 'active' AND quantity >= ? AND expiry_date > date('now')
-        ORDER BY expiry_date ASC LIMIT 1
-      `).get(item.medicine_id, item.quantity);
-
-      if (!batch) {
-        return res.status(400).json({ error: `Insufficient stock for ${medicine.brand_name}` });
+      const medicine = await first(db, 'SELECT id, brand_name, default_selling_price FROM medicines WHERE id = ? AND is_active = 1', [item.medicine_id]);
+      if (!medicine) {
+        return json({ error: `Medicine ${item.medicine_id} not found` }, 404);
       }
 
-      const itemSubtotal = batch.selling_price * item.quantity;
-      const itemDiscount = item.discount || 0;
-      const itemVat = (itemSubtotal - itemDiscount) * (medicine.vat_rate / 100);
+      const batches = await all(
+        db,
+        'SELECT id, selling_price, expiry_date, quantity FROM batches WHERE medicine_id = ? AND quantity > 0 ORDER BY expiry_date ASC',
+        [item.medicine_id]
+      );
 
-      subtotal += itemSubtotal - itemDiscount;
-      vatAmount += itemVat;
+      let remainingQty = item.quantity;
+      const itemBatches = [];
+      let itemTotalPrice = 0;
 
-      validatedItems.push({ ...item, batch_id: batch.id, unit_price: batch.selling_price, subtotal: itemSubtotal - itemDiscount, vat: itemVat });
+      for (const batch of batches) {
+        if (remainingQty <= 0) break;
+        const qty = Math.min(remainingQty, batch.quantity);
+        remainingQty -= qty;
+
+        const price = batch.selling_price || medicine.default_selling_price;
+
+        itemBatches.push({
+          batch_id: batch.id,
+          quantity: qty,
+          unit_price: price,
+        });
+
+        itemTotalPrice += qty * price;
+      }
+
+      if (remainingQty > 0) {
+        return json({ error: `Insufficient stock for ${medicine.brand_name}. Available: ${item.quantity - remainingQty}, Requested: ${item.quantity}` }, 400);
+      }
+
+      subtotal += itemTotalPrice;
+
+      for (const ib of itemBatches) {
+        saleItemsData.push({
+          medicine_id: item.medicine_id,
+          batch_id: ib.batch_id,
+          quantity: ib.quantity,
+          unit_price: ib.unit_price,
+          discount: 0,
+          subtotal: ib.quantity * ib.unit_price,
+        });
+      }
     }
 
-    const totalAmount = subtotal + vatAmount - (discount_amount || 0);
-    const amountPaid = amount_paid || totalAmount;
-    const changeAmount = amountPaid > totalAmount ? amountPaid - totalAmount : 0;
+    const discountAmt = discount_amount || 0;
+    const vat = vat_amount || 0;
+    const total = subtotal - discountAmt + vat;
+    const paidAmount = amount_paid || total;
+    const changeAmount = Math.max(0, paidAmount - total);
 
-    // Create sale
-    const saleResult = db.prepare(`
-      INSERT INTO sales (customer_id, user_id, prescription_id, subtotal, vat_amount, discount_amount, total_amount, payment_method, amount_paid, change_amount, notes)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(customer_id || null, req.user.id, prescription_id || null, subtotal, vatAmount, discount_amount || 0, totalAmount, payment_method || 'cash', amountPaid, changeAmount, notes || null);
+    const info = await run(
+      db,
+      `INSERT INTO sales (customer_id, user_id, branch_id, prescription_id, subtotal, vat_amount, discount_amount, total_amount, payment_method, amount_paid, change_amount, loyalty_points_earned, loyalty_points_redeemed, status, notes, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'completed', ?, ?)`,
+      [
+        customer_id || null, authUser.id, branch_id || null, prescription_id || null,
+        subtotal, vat, discountAmt, total, payment_method || 'cash',
+        paidAmount, changeAmount, loyalty_points_redeemed || 0,
+        notes || null, now
+      ]
+    );
 
-    const saleId = saleResult.lastInsertRowid;
+    const saleId = info.lastInsertRowid;
 
-    // Insert sale items and update batch quantities
-    for (const item of validatedItems) {
-      db.prepare('INSERT INTO sale_items (sale_id, medicine_id, batch_id, quantity, unit_price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(saleId, item.medicine_id, item.batch_id, item.quantity, item.unit_price, item.discount || 0, item.subtotal);
+    for (const item of saleItemsData) {
+      await run(
+        db,
+        'INSERT INTO sale_items (sale_id, medicine_id, batch_id, quantity, unit_price, discount, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [saleId, item.medicine_id, item.batch_id, item.quantity, item.unit_price, item.discount, item.subtotal]
+      );
 
-      db.prepare('UPDATE batches SET quantity = quantity - ? WHERE id = ?').run(item.quantity, item.batch_id);
+      await run(
+        db,
+        'UPDATE batches SET quantity = quantity - ? WHERE id = ?',
+        [item.quantity, item.batch_id]
+      );
+
+      await run(
+        db,
+        `INSERT INTO inventory_adjustments (medicine_id, batch_id, adjustment_type, quantity, reason, user_id, created_at)
+         VALUES (?, ?, 'decrease', ?, ?, ?, ?)`,
+        [item.medicine_id, item.batch_id, item.quantity, `Sale #${saleId}`, authUser.id, now]
+      );
     }
 
-    // Update customer loyalty
+    let loyaltyPointsEarned = 0;
     if (customer_id) {
-      const points = Math.floor(totalAmount / 100);
-      db.prepare('UPDATE customers SET loyalty_points = loyalty_points + ?, total_purchases = total_purchases + ? WHERE id = ?')
-        .run(points, totalAmount, customer_id);
+      loyaltyPointsEarned = Math.floor(total / 100);
+      await run(db, 'UPDATE customers SET loyalty_points = loyalty_points + ?, total_purchases = total_purchases + ? WHERE id = ?', [loyaltyPointsEarned, total, customer_id]);
+      await run(db, 'UPDATE sales SET loyalty_points_earned = ? WHERE id = ?', [loyaltyPointsEarned, saleId]);
     }
 
-    // Update medicine purchase price from latest batch if not set
-    for (const item of validatedItems) {
-      const med = db.prepare('SELECT purchase_price FROM medicines WHERE id = ?').get(item.medicine_id);
-      if (med && med.purchase_price === 0) {
-        const batch = db.prepare('SELECT purchase_price FROM batches WHERE id = ?').get(item.batch_id);
-        if (batch) {
-          db.prepare('UPDATE medicines SET purchase_price = ? WHERE id = ?').run(batch.purchase_price, item.medicine_id);
-        }
-      }
-    }
+    const sale = await first(db, 'SELECT * FROM sales WHERE id = ?', [saleId]);
+    const fullItems = await all(
+      db,
+      `SELECT si.*, m.brand_name
+       FROM sale_items si
+       JOIN medicines m ON m.id = si.medicine_id
+       WHERE si.sale_id = ?`,
+      [saleId]
+    );
 
-    const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(saleId);
-    const saleItems = db.prepare(`
-      SELECT si.*, m.brand_name, m.generic_name, m.strength, m.dosage_form
-      FROM sale_items si JOIN medicines m ON si.medicine_id = m.id WHERE si.sale_id = ?
-    `).all(saleId);
-
-    res.status(201).json({ ...sale, items: saleItems });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return json({ ...sale, items: fullItems }, 201);
   }
-});
 
-router.get('/sales', authenticateToken, (req, res) => {
-  try {
-    const { date, start_date, end_date, user_id, page = 1, limit = 50 } = req.query;
-    let query = 'SELECT s.*, u.full_name as cashier_name, c.name as customer_name FROM sales s LEFT JOIN users u ON s.user_id = u.id LEFT JOIN customers c ON s.customer_id = c.id WHERE s.status = ?';
-    const params = ['completed'];
+  if (method === 'GET' && segment === 'sales') {
+    const page = parseInt(searchParams.get('page')) || 1;
+    const limit = parseInt(searchParams.get('limit')) || 50;
+    const offset = (page - 1) * limit;
+    const startDate = searchParams.get('start_date');
+    const endDate = searchParams.get('end_date');
+    const userId = searchParams.get('user_id');
 
-    if (date) {
-      query += " AND date(s.created_at) = ?";
-      params.push(date);
+    let where = "WHERE s.status = 'completed'";
+    const params = [];
+
+    if (startDate) {
+      where += ' AND s.created_at >= ?';
+      params.push(startDate);
     }
-    if (start_date && end_date) {
-      query += " AND date(s.created_at) BETWEEN ? AND ?";
-      params.push(start_date, end_date);
+    if (endDate) {
+      where += ' AND s.created_at <= ?';
+      params.push(endDate + 'T23:59:59');
     }
-    if (user_id) {
-      query += ' AND s.user_id = ?';
-      params.push(user_id);
+    if (userId) {
+      where += ' AND s.user_id = ?';
+      params.push(parseInt(userId));
     }
 
-    const countQuery = query.replace('SELECT s.*, u.full_name as cashier_name, c.name as customer_name', 'SELECT COUNT(*) as total');
-    const { total } = db.prepare(countQuery).get(...params);
+    const countRow = await first(db, `SELECT COUNT(*) as total FROM sales s ${where}`, params);
+    const total = countRow ? countRow.total : 0;
 
-    query += ' ORDER BY s.created_at DESC LIMIT ? OFFSET ?';
-    params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
+    const sales = await all(
+      db,
+      `SELECT s.*, u.full_name as user_name, c.name as customer_name
+       FROM sales s
+       LEFT JOIN users u ON u.id = s.user_id
+       LEFT JOIN customers c ON c.id = s.customer_id
+       ${where}
+       ORDER BY s.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
 
-    const sales = db.prepare(query).all(...params);
-    res.json({ sales, total });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return json({ sales, total, page, limit, totalPages: Math.ceil(total / limit) });
   }
-});
 
-router.get('/sales/:id', authenticateToken, (req, res) => {
-  try {
-    const sale = db.prepare('SELECT s.*, u.full_name as cashier_name, c.name as customer_name FROM sales s LEFT JOIN users u ON s.user_id = u.id LEFT JOIN customers c ON s.customer_id = c.id WHERE s.id = ?').get(req.params.id);
-    if (!sale) return res.status(404).json({ error: 'Sale not found' });
+  if (method === 'GET' && segment === 'today-summary') {
+    const today = new Date().toISOString().split('T')[0];
 
-    const items = db.prepare('SELECT si.*, m.brand_name, m.generic_name, m.strength, m.dosage_form FROM sale_items si JOIN medicines m ON si.medicine_id = m.id WHERE si.sale_id = ?').all(sale.id);
-    sale.items = items;
+    const totalSales = await first(
+      db,
+      `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total, COALESCE(SUM(discount_amount), 0) as discounts, COALESCE(SUM(vat_amount), 0) as taxes
+       FROM sales WHERE status = 'completed' AND DATE(created_at) = ?`,
+      [today]
+    );
+    const paymentBreakdown = await all(
+      db,
+      `SELECT payment_method, COUNT(*) as count, SUM(amount_paid) as total
+       FROM sales WHERE status = 'completed' AND DATE(created_at) = ?
+       GROUP BY payment_method`,
+      [today]
+    );
+    const itemsSold = await first(
+      db,
+      `SELECT COALESCE(SUM(si.quantity), 0) as count
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id
+       WHERE s.status = 'completed' AND DATE(s.created_at) = ?`,
+      [today]
+    );
 
-    res.json(sale);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return json({
+      date: today,
+      total_sales: totalSales.count,
+      total_revenue: totalSales.total,
+      total_discounts: totalSales.discounts,
+      total_taxes: totalSales.taxes,
+      items_sold: itemsSold.count,
+      payment_methods: paymentBreakdown,
+    });
   }
-});
 
-router.post('/void/:id', authenticateToken, (req, res) => {
-  try {
-    const sale = db.prepare('SELECT * FROM sales WHERE id = ?').get(req.params.id);
-    if (!sale) return res.status(404).json({ error: 'Sale not found' });
-    if (sale.status === 'voided') return res.status(400).json({ error: 'Sale already voided' });
+  if (method === 'GET' && segment === 'profit') {
+    const startDate = searchParams.get('start_date') || new Date().toISOString().split('T')[0];
+    const endDate = searchParams.get('end_date') || startDate;
 
-    db.prepare("UPDATE sales SET status = 'voided' WHERE id = ?").run(req.params.id);
+    const revenue = await first(
+      db,
+      `SELECT COALESCE(SUM(total_amount), 0) as total
+       FROM sales WHERE status = 'completed' AND DATE(created_at) BETWEEN ? AND ?`,
+      [startDate, endDate]
+    );
+    const cost = await first(
+      db,
+      `SELECT COALESCE(SUM(si.subtotal), 0) as total
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id
+       JOIN batches b ON b.id = si.batch_id
+       WHERE s.status = 'completed' AND DATE(s.created_at) BETWEEN ? AND ?`,
+      [startDate, endDate]
+    );
 
-    // Restore batch quantities
-    const items = db.prepare('SELECT * FROM sale_items WHERE sale_id = ?').all(req.params.id);
+    const profit = revenue.total - cost.total;
+
+    return json({
+      start_date: startDate,
+      end_date: endDate,
+      revenue: revenue.total,
+      cost: cost.total,
+      profit: profit,
+      margin: revenue.total > 0 ? (profit / revenue.total * 100).toFixed(2) : 0,
+    });
+  }
+
+  if (method === 'POST' && segment === 'void') {
+    const authUser = await authenticate(request, env);
+    if (!authUser) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
+    const id = parts[1] ? parseInt(parts[1]) : null;
+    if (!id) {
+      return json({ error: 'Sale ID is required' }, 400);
+    }
+
+    const sale = await first(db, 'SELECT * FROM sales WHERE id = ?', [id]);
+    if (!sale) {
+      return json({ error: 'Sale not found' }, 404);
+    }
+    if (sale.status === 'voided') {
+      return json({ error: 'Sale already voided' }, 400);
+    }
+
+    await run(db, "UPDATE sales SET status = 'voided' WHERE id = ?", [id]);
+
+    const items = await all(db, 'SELECT * FROM sale_items WHERE sale_id = ?', [id]);
     for (const item of items) {
       if (item.batch_id) {
-        db.prepare('UPDATE batches SET quantity = quantity + ? WHERE id = ?').run(item.quantity, item.batch_id);
+        await run(db, 'UPDATE batches SET quantity = quantity + ? WHERE id = ?', [item.quantity, item.batch_id]);
+        await run(
+          db,
+          `INSERT INTO inventory_adjustments (medicine_id, batch_id, adjustment_type, quantity, reason, user_id, created_at)
+           VALUES (?, ?, 'increase', ?, ?, ?, ?)`,
+          [item.medicine_id, item.batch_id, item.quantity, `Sale #${id} voided`, authUser.id, new Date().toISOString()]
+        );
       }
     }
 
-    // Reverse loyalty points
-    if (sale.customer_id) {
-      const points = Math.floor(sale.total_amount / 100);
-      db.prepare('UPDATE customers SET loyalty_points = loyalty_points - ?, total_purchases = total_purchases - ? WHERE id = ?')
-        .run(points, sale.total_amount, sale.customer_id);
+    if (sale.customer_id && sale.loyalty_points_earned > 0) {
+      await run(
+        db,
+        'UPDATE customers SET loyalty_points = MAX(0, loyalty_points - ?) WHERE id = ?',
+        [sale.loyalty_points_earned, sale.customer_id]
+      );
     }
 
-    res.json({ message: 'Sale voided successfully' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return json({ message: 'Sale voided successfully' });
   }
-});
 
-router.get('/today-summary', authenticateToken, (req, res) => {
-  try {
-    const summary = db.prepare(`
-      SELECT
-        COUNT(*) as total_sales,
-        COALESCE(SUM(total_amount), 0) as total_revenue,
-        COALESCE(SUM(vat_amount), 0) as total_vat,
-        COALESCE(SUM(discount_amount), 0) as total_discounts,
-        COALESCE(SUM(amount_paid), 0) as total_collected
-      FROM sales WHERE status = 'completed' AND date(created_at) = date('now')
-    `).get();
+  if (method === 'GET' && segment && segment !== 'sales' && segment !== 'today-summary' && segment !== 'profit' && segment !== 'void') {
+    const id = parseInt(segment);
+    if (isNaN(id)) {
+      return json({ error: 'Invalid ID' }, 400);
+    }
 
-    const paymentBreakdown = db.prepare(`
-      SELECT payment_method, COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
-      FROM sales WHERE status = 'completed' AND date(created_at) = date('now')
-      GROUP BY payment_method
-    `).all();
+    const sale = await first(
+      db,
+      `SELECT s.*, u.full_name as user_name, c.name as customer_name
+       FROM sales s
+       LEFT JOIN users u ON u.id = s.user_id
+       LEFT JOIN customers c ON c.id = s.customer_id
+       WHERE s.id = ?`,
+      [id]
+    );
+    if (!sale) {
+      return json({ error: 'Sale not found' }, 404);
+    }
 
-    const topSelling = db.prepare(`
-      SELECT m.brand_name, m.generic_name, SUM(si.quantity) as qty_sold, SUM(si.subtotal) as revenue
-      FROM sale_items si
-      JOIN sales s ON si.sale_id = s.id
-      JOIN medicines m ON si.medicine_id = m.id
-      WHERE s.status = 'completed' AND date(s.created_at) = date('now')
-      GROUP BY m.id ORDER BY qty_sold DESC LIMIT 10
-    `).all();
+    const items = await all(
+      db,
+      `SELECT si.*, m.brand_name
+       FROM sale_items si
+       JOIN medicines m ON m.id = si.medicine_id
+       WHERE si.sale_id = ?`,
+      [id]
+    );
 
-    res.json({ summary, paymentBreakdown, topSelling });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return json({ ...sale, items });
   }
-});
 
-router.get('/profit', authenticateToken, (req, res) => {
-  try {
-    const { start_date, end_date } = req.query;
-    const today = new Date().toISOString().split('T')[0];
-    const startDate = start_date || today;
-    const endDate = end_date || today;
-
-    const profit = db.prepare(`
-      SELECT
-        SUM(si.subtotal) as total_sales,
-        SUM(si.quantity * m.purchase_price) as total_cost,
-        SUM(si.subtotal) - SUM(si.quantity * m.purchase_price) as gross_profit
-      FROM sale_items si
-      JOIN sales s ON si.sale_id = s.id
-      JOIN medicines m ON si.medicine_id = m.id
-      WHERE s.status = 'completed' AND date(s.created_at) BETWEEN ? AND ?
-    `).get(startDate, endDate);
-
-    const expenses = db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total_expenses
-      FROM expenses WHERE date BETWEEN ? AND ?
-    `).get(startDate, endDate);
-
-    const netProfit = (profit.gross_profit || 0) - expenses.total_expenses;
-
-    res.json({ ...profit, total_expenses: expenses.total_expenses, net_profit: netProfit });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-export default router;
+  return json({ error: 'Not found' }, 404);
+}

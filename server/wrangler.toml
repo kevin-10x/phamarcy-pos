@@ -1,0 +1,14 @@
+name = "hauzral-pharmacy-pos-api"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "pharmacy-pos-db"
+database_id = "placeholder-run-wrangler-d1-create"
+
+# Environment variables
+[vars]
+JWT_SECRET = "hauzral-pharmacy-pos-secret-key-2024"

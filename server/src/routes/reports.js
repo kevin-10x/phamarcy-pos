@@ -1,234 +1,317 @@
-import { Router } from 'express';
-import db from '../database/connection.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { first, all, run, json, authenticate } from '../utils/d1.js';
 
-const router = Router();
+export async function reportRoutes(request, env, path, db) {
+  const parts = path.split('/').filter(Boolean);
+  const method = request.method;
+  const segment = parts[0] || '';
+  const url = new URL(request.url);
+  const searchParams = url.searchParams;
 
-router.get('/dashboard', authenticateToken, (req, res) => {
-  try {
+  if (method === 'GET' && segment === 'dashboard') {
     const today = new Date().toISOString().split('T')[0];
 
-    const todaySales = db.prepare(`
-      SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total, COALESCE(SUM(amount_paid), 0) as collected
-      FROM sales WHERE status = 'completed' AND date(created_at) = ?
-    `).get(today);
+    const todaySales = await first(
+      db,
+      `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
+       FROM sales WHERE status = 'completed' AND DATE(created_at) = ?`,
+      [today]
+    );
+    const totalSales = await first(
+      db,
+      `SELECT COUNT(*) as count, COALESCE(SUM(total_amount), 0) as total
+       FROM sales WHERE status = 'completed'`
+    );
+    const totalCustomers = await first(db, 'SELECT COUNT(*) as count FROM customers WHERE is_active = 1');
+    const totalMedicines = await first(db, 'SELECT COUNT(*) as count FROM medicines WHERE is_active = 1');
+    const lowStock = await first(
+      db,
+      `SELECT COUNT(DISTINCT m.id) as count
+       FROM medicines m
+       LEFT JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
+       WHERE m.is_active = 1
+       GROUP BY m.id
+       HAVING COALESCE(SUM(b.quantity), 0) <= 10`
+    );
+    const expiringSoon = await first(
+      db,
+      `SELECT COUNT(*) as count FROM batches b
+       JOIN medicines m ON m.id = b.medicine_id
+       WHERE b.quantity > 0 AND m.is_active = 1
+       AND b.expiry_date <= date('now', '+90 days')`
+    );
 
-    const todayProfit = db.prepare(`
-      SELECT COALESCE(SUM(si.subtotal - (si.quantity * m.purchase_price)), 0) as profit
-      FROM sale_items si JOIN sales s ON si.sale_id = s.id JOIN medicines m ON si.medicine_id = m.id
-      WHERE s.status = 'completed' AND date(s.created_at) = ?
-    `).get(today);
+    const recentSales = await all(
+      db,
+      `SELECT s.*, u.full_name as user_name
+       FROM sales s
+       LEFT JOIN users u ON u.id = s.user_id
+       WHERE s.status = 'completed'
+       ORDER BY s.created_at DESC
+       LIMIT 5`
+    );
 
-    const monthRevenue = db.prepare(`
-      SELECT COALESCE(SUM(total_amount), 0) as revenue, COALESCE(SUM(amount_paid), 0) as collected
-      FROM sales WHERE status = 'completed' AND strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')
-    `).get();
+    const topMedicines = await all(
+      db,
+      `SELECT m.brand_name, SUM(si.quantity) as total_sold, SUM(si.subtotal) as revenue
+       FROM sale_items si
+       JOIN medicines m ON m.id = si.medicine_id
+       JOIN sales s ON s.id = si.sale_id
+       WHERE s.status = 'completed'
+       GROUP BY m.id
+       ORDER BY total_sold DESC
+       LIMIT 5`
+    );
 
-    const monthProfit = db.prepare(`
-      SELECT COALESCE(SUM(si.subtotal - (si.quantity * m.purchase_price)), 0) as profit
-      FROM sale_items si JOIN sales s ON si.sale_id = s.id JOIN medicines m ON si.medicine_id = m.id
-      WHERE s.status = 'completed' AND strftime('%Y-%m', s.created_at) = strftime('%Y-%m', 'now')
-    `).get();
-
-    const lowStock = db.prepare(`
-      SELECT m.id, m.brand_name, m.generic_name, m.strength, m.dosage_form,
-        COALESCE(SUM(b.quantity), 0) as current_stock, mc.name as category_name
-      FROM medicines m
-      LEFT JOIN batches b ON b.medicine_id = m.id AND b.status = 'active' AND b.expiry_date > date('now')
-      LEFT JOIN medicine_categories mc ON m.category_id = mc.id
-      WHERE m.is_active = 1 GROUP BY m.id HAVING current_stock <= 20
-      ORDER BY current_stock ASC LIMIT 5
-    `).all();
-
-    const expiringMedicines = db.prepare(`
-      SELECT b.*, m.brand_name, m.generic_name, m.strength
-      FROM batches b JOIN medicines m ON b.medicine_id = m.id
-      WHERE b.status = 'active' AND b.expiry_date <= date('now', '+90 days') AND b.expiry_date > date('now')
-      ORDER BY b.expiry_date ASC LIMIT 5
-    `).all();
-
-    const topSelling = db.prepare(`
-      SELECT m.brand_name, m.generic_name, m.strength, SUM(si.quantity) as qty_sold, SUM(si.subtotal) as revenue
-      FROM sale_items si JOIN sales s ON si.sale_id = s.id JOIN medicines m ON si.medicine_id = m.id
-      WHERE s.status = 'completed' AND strftime('%Y-%m', s.created_at) = strftime('%Y-%m', 'now')
-      GROUP BY m.id ORDER BY qty_sold DESC LIMIT 5
-    `).all();
-
-    const pendingPrescriptions = db.prepare("SELECT COUNT(*) as count FROM prescriptions WHERE status = 'active'").get();
-
-    const todayExpenses = db.prepare("SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date = ?").get(today);
-
-    const recentSales = db.prepare(`
-      SELECT s.*, c.name as customer_name, u.full_name as cashier_name
-      FROM sales s LEFT JOIN customers c ON s.customer_id = c.id LEFT JOIN users u ON s.user_id = u.id
-      WHERE s.status = 'completed' ORDER BY s.created_at DESC LIMIT 5
-    `).all();
-
-    const totalMedicines = db.prepare('SELECT COUNT(*) as count FROM medicines WHERE is_active = 1').get().count;
-    const totalCustomers = db.prepare('SELECT COUNT(*) as count FROM customers WHERE is_active = 1').get().count;
-    const totalStock = db.prepare("SELECT COALESCE(SUM(quantity), 0) as total FROM batches WHERE status = 'active'").get().total;
-
-    res.json({
-      todaySales, todayProfit, monthRevenue, monthProfit,
-      lowStock, expiringMedicines, topSelling,
-      pendingPrescriptions: pendingPrescriptions.count,
-      todayExpenses: todayExpenses.total,
-      recentSales,
-      totalMedicines, totalCustomers, totalStock
+    return json({
+      today: {
+        sales_count: todaySales ? todaySales.count : 0,
+        revenue: todaySales ? todaySales.total : 0,
+      },
+      all_time: {
+        sales_count: totalSales ? totalSales.count : 0,
+        revenue: totalSales ? totalSales.total : 0,
+      },
+      customers: totalCustomers ? totalCustomers.count : 0,
+      medicines: totalMedicines ? totalMedicines.count : 0,
+      low_stock_count: lowStock ? lowStock.count : 0,
+      expiring_soon_count: expiringSoon ? expiringSoon.count : 0,
+      recent_sales: recentSales,
+      top_medicines: topMedicines,
     });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
   }
-});
 
-router.get('/sales-report', authenticateToken, (req, res) => {
-  try {
-    const { period = 'daily', start_date, end_date } = req.query;
-    let groupBy, dateFormat;
+  if (method === 'GET' && segment === 'sales-report') {
+    const startDate = searchParams.get('start_date') || new Date().toISOString().split('T')[0];
+    const endDate = searchParams.get('end_date') || startDate;
 
-    switch (period) {
-      case 'daily': groupBy = "date(created_at)"; dateFormat = '%Y-%m-%d'; break;
-      case 'weekly': groupBy = "strftime('%Y-W%W', created_at)"; dateFormat = '%Y-W%W'; break;
-      case 'monthly': groupBy = "strftime('%Y-%m', created_at)"; dateFormat = '%Y-%m'; break;
-      case 'yearly': groupBy = "strftime('%Y', created_at)"; dateFormat = '%Y'; break;
-      default: groupBy = "date(created_at)"; dateFormat = '%Y-%m-%d';
-    }
+    const salesByDay = await all(
+      db,
+      `SELECT DATE(created_at) as date, COUNT(*) as count, SUM(total_amount) as revenue, SUM(discount_amount) as discounts
+       FROM sales
+       WHERE status = 'completed' AND DATE(created_at) BETWEEN ? AND ?
+       GROUP BY DATE(created_at)
+       ORDER BY date`,
+      [startDate, endDate]
+    );
 
-    let dateFilter = '';
-    const params = ['completed'];
-    if (start_date && end_date) {
-      dateFilter = 'AND date(created_at) BETWEEN ? AND ?';
-      params.push(start_date, end_date);
-    }
+    const salesByPayment = await all(
+      db,
+      `SELECT payment_method, COUNT(*) as count, SUM(amount_paid) as total
+       FROM sales
+       WHERE status = 'completed' AND DATE(created_at) BETWEEN ? AND ?
+       GROUP BY payment_method`,
+      [startDate, endDate]
+    );
 
-    const report = db.prepare(`
-      SELECT ${groupBy} as period,
-        COUNT(*) as sales_count,
-        COALESCE(SUM(total_amount), 0) as total_revenue,
-        COALESCE(SUM(amount_paid), 0) as total_collected,
-        COALESCE(SUM(vat_amount), 0) as total_vat,
-        COALESCE(SUM(discount_amount), 0) as total_discounts
-      FROM sales WHERE status = ? ${dateFilter}
-      GROUP BY ${groupBy} ORDER BY period DESC LIMIT 30
-    `).all(...params);
+    const salesByUser = await all(
+      db,
+      `SELECT u.full_name, COUNT(*) as count, SUM(s.total_amount) as revenue
+       FROM sales s
+       JOIN users u ON u.id = s.user_id
+       WHERE s.status = 'completed' AND DATE(s.created_at) BETWEEN ? AND ?
+       GROUP BY s.user_id
+       ORDER BY revenue DESC`,
+      [startDate, endDate]
+    );
 
-    res.json(report);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const topMedicines = await all(
+      db,
+      `SELECT m.brand_name, SUM(si.quantity) as quantity_sold, SUM(si.subtotal) as revenue
+       FROM sale_items si
+       JOIN medicines m ON m.id = si.medicine_id
+       JOIN sales s ON s.id = si.sale_id
+       WHERE s.status = 'completed' AND DATE(s.created_at) BETWEEN ? AND ?
+       GROUP BY m.id
+       ORDER BY revenue DESC
+       LIMIT 10`,
+      [startDate, endDate]
+    );
+
+    return json({
+      start_date: startDate,
+      end_date: endDate,
+      sales_by_day: salesByDay,
+      sales_by_payment: salesByPayment,
+      sales_by_user: salesByUser,
+      top_medicines: topMedicines,
+    });
   }
-});
 
-router.get('/inventory-report', authenticateToken, (req, res) => {
-  try {
-    const currentStock = db.prepare(`
-      SELECT m.*, COALESCE(SUM(b.quantity), 0) as current_stock, mc.name as category_name
-      FROM medicines m
-      LEFT JOIN batches b ON b.medicine_id = m.id AND b.status = 'active'
-      LEFT JOIN medicine_categories mc ON m.category_id = mc.id
-      WHERE m.is_active = 1 GROUP BY m.id ORDER BY m.brand_name
-    `).all();
+  if (method === 'GET' && segment === 'inventory-report') {
+    const stockByCategory = await all(
+      db,
+      `SELECT mc.name as category_name,
+              COUNT(DISTINCT m.id) as medicine_count,
+              COALESCE(SUM(b.quantity), 0) as total_stock,
+              COALESCE(SUM(b.quantity * b.purchase_price), 0) as stock_value
+       FROM medicines m
+       LEFT JOIN medicine_categories mc ON mc.id = m.category_id
+       LEFT JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
+       WHERE m.is_active = 1
+       GROUP BY mc.id
+       ORDER BY stock_value DESC`
+    );
 
-    const categoryBreakdown = db.prepare(`
-      SELECT mc.name as category, COUNT(DISTINCT m.id) as medicine_count,
-        COALESCE(SUM(b.quantity), 0) as total_stock
-      FROM medicine_categories mc
-      LEFT JOIN medicines m ON m.category_id = mc.id AND m.is_active = 1
-      LEFT JOIN batches b ON b.medicine_id = m.id AND b.status = 'active'
-      GROUP BY mc.id ORDER BY mc.name
-    `).all();
+    const lowStockItems = await all(
+      db,
+      `SELECT m.id, m.brand_name, m.barcode,
+              COALESCE(SUM(b.quantity), 0) as current_stock
+       FROM medicines m
+       LEFT JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
+       WHERE m.is_active = 1
+       GROUP BY m.id
+       HAVING current_stock <= 10
+       ORDER BY current_stock ASC`
+    );
 
-    res.json({ currentStock, categoryBreakdown });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const expiringItems = await all(
+      db,
+      `SELECT b.*, m.brand_name
+       FROM batches b
+       JOIN medicines m ON m.id = b.medicine_id
+       WHERE b.quantity > 0 AND m.is_active = 1
+       AND b.expiry_date <= date('now', '+90 days')
+       ORDER BY b.expiry_date ASC`
+    );
+
+    return json({
+      stock_by_category: stockByCategory,
+      low_stock_items: lowStockItems,
+      expiring_items: expiringItems,
+    });
   }
-});
 
-router.get('/financial-report', authenticateToken, (req, res) => {
-  try {
-    const { start_date, end_date } = req.query;
-    const today = new Date().toISOString().split('T')[0];
-    const startDate = start_date || today;
-    const endDate = end_date || today;
+  if (method === 'GET' && segment === 'financial-report') {
+    const startDate = searchParams.get('start_date') || new Date().toISOString().split('T')[0];
+    const endDate = searchParams.get('end_date') || startDate;
 
-    const revenue = db.prepare(`
-      SELECT COALESCE(SUM(total_amount), 0) as total_revenue,
-        COALESCE(SUM(vat_amount), 0) as total_vat
-      FROM sales WHERE status = 'completed' AND date(created_at) BETWEEN ? AND ?
-    `).get(startDate, endDate);
+    const revenue = await first(
+      db,
+      `SELECT COALESCE(SUM(total_amount), 0) as total
+       FROM sales WHERE status = 'completed' AND DATE(created_at) BETWEEN ? AND ?`,
+      [startDate, endDate]
+    );
 
-    const cost = db.prepare(`
-      SELECT COALESCE(SUM(si.quantity * m.purchase_price), 0) as total_cost
-      FROM sale_items si JOIN sales s ON si.sale_id = s.id JOIN medicines m ON si.medicine_id = m.id
-      WHERE s.status = 'completed' AND date(s.created_at) BETWEEN ? AND ?
-    `).get(startDate, endDate);
+    const costData = await first(
+      db,
+      `SELECT COALESCE(SUM(b.purchase_price * si.quantity), 0) as total
+       FROM sale_items si
+       JOIN sales s ON s.id = si.sale_id
+       JOIN batches b ON b.id = si.batch_id
+       WHERE s.status = 'completed' AND DATE(s.created_at) BETWEEN ? AND ?`,
+      [startDate, endDate]
+    );
 
-    const expenses = db.prepare(`
-      SELECT category, COALESCE(SUM(amount), 0) as total
-      FROM expenses WHERE date BETWEEN ? AND ?
-      GROUP BY category
-    `).all(startDate, endDate);
+    const expenses = await first(
+      db,
+      `SELECT COALESCE(SUM(amount), 0) as total
+       FROM expenses WHERE date BETWEEN ? AND ?`,
+      [startDate, endDate]
+    );
 
-    const totalExpenses = expenses.reduce((sum, e) => sum + e.total, 0);
-    const grossProfit = revenue.total_revenue - cost.total_cost;
-    const netProfit = grossProfit - totalExpenses;
+    const revenueTotal = revenue ? revenue.total : 0;
+    const costTotal = costData ? costData.total : 0;
+    const expensesTotal = expenses ? expenses.total : 0;
+    const profit = revenueTotal - costTotal;
+    const netProfit = profit - expensesTotal;
 
-    res.json({ revenue, cost: cost.total_cost, expenses, totalExpenses, grossProfit, netProfit });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return json({
+      start_date: startDate,
+      end_date: endDate,
+      revenue: revenueTotal,
+      cost_of_goods: costTotal,
+      gross_profit: profit,
+      expenses: expensesTotal,
+      net_profit: netProfit,
+      gross_margin: revenueTotal > 0 ? (profit / revenueTotal * 100).toFixed(2) : 0,
+      net_margin: revenueTotal > 0 ? (netProfit / revenueTotal * 100).toFixed(2) : 0,
+    });
   }
-});
 
-router.get('/cash-summary', authenticateToken, (req, res) => {
-  try {
-    const today = new Date().toISOString().split('T')[0];
-    const summary = db.prepare(`
-      SELECT
-        COALESCE(SUM(CASE WHEN payment_method = 'cash' THEN amount_paid ELSE 0 END), 0) as cash,
-        COALESCE(SUM(CASE WHEN payment_method = 'mpesa' THEN amount_paid ELSE 0 END), 0) as mpesa,
-        COALESCE(SUM(CASE WHEN payment_method = 'card' THEN amount_paid ELSE 0 END), 0) as card,
-        COALESCE(SUM(CASE WHEN payment_method = 'insurance' THEN amount_paid ELSE 0 END), 0) as insurance,
-        COALESCE(SUM(CASE WHEN payment_method = 'credit' THEN total_amount ELSE 0 END), 0) as credit,
-        COALESCE(SUM(amount_paid), 0) as total_collected
-      FROM sales WHERE status = 'completed' AND date(created_at) = ?
-    `).get(today);
+  if (method === 'GET' && segment === 'cash-summary') {
+    const startDate = searchParams.get('start_date') || new Date().toISOString().split('T')[0];
+    const endDate = searchParams.get('end_date') || startDate;
 
-    const expenses = db.prepare('SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date = ?').get(today);
+    const summary = await all(
+      db,
+      `SELECT payment_method,
+              COUNT(*) as transaction_count,
+              SUM(amount_paid) as total_received,
+              SUM(total_amount) as total_sales
+       FROM sales
+       WHERE status = 'completed' AND DATE(created_at) BETWEEN ? AND ?
+       GROUP BY payment_method`,
+      [startDate, endDate]
+    );
 
-    res.json({ ...summary, expenses: expenses.total, net: summary.total_collected - expenses.total });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const total = await first(
+      db,
+      `SELECT COALESCE(SUM(amount_paid), 0) as total
+       FROM sales WHERE status = 'completed' AND DATE(created_at) BETWEEN ? AND ?`,
+      [startDate, endDate]
+    );
+
+    return json({
+      start_date: startDate,
+      end_date: endDate,
+      methods: summary,
+      grand_total: total ? total.total : 0,
+    });
   }
-});
 
-// Expenses
-router.get('/expenses', authenticateToken, (req, res) => {
-  try {
-    const { start_date, end_date, category } = req.query;
-    let query = 'SELECT e.*, u.full_name as recorded_by FROM expenses e LEFT JOIN users u ON e.user_id = u.id WHERE 1=1';
+  if (method === 'GET' && segment === 'expenses') {
+    const startDate = searchParams.get('start_date');
+    const endDate = searchParams.get('end_date');
+    const category = searchParams.get('category');
+
+    let where = 'WHERE 1=1';
     const params = [];
-    if (start_date && end_date) { query += ' AND date BETWEEN ? AND ?'; params.push(start_date, end_date); }
-    if (category) { query += ' AND category = ?'; params.push(category); }
-    query += ' ORDER BY e.created_at DESC';
-    const expenses = db.prepare(query).all(...params);
-    res.json(expenses);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+
+    if (startDate) {
+      where += ' AND date >= ?';
+      params.push(startDate);
+    }
+    if (endDate) {
+      where += ' AND date <= ?';
+      params.push(endDate);
+    }
+    if (category) {
+      where += ' AND category = ?';
+      params.push(category);
+    }
+
+    const expenses = await all(db, `SELECT * FROM expenses ${where} ORDER BY created_at DESC`, params);
+    return json(expenses);
   }
-});
 
-router.post('/expenses', authenticateToken, (req, res) => {
-  try {
-    const { category, description, amount, date } = req.body;
-    if (!category || !amount) return res.status(400).json({ error: 'Category and amount required' });
+  if (method === 'POST' && segment === 'expenses') {
+    const authUser = await authenticate(request, env);
+    if (!authUser) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
 
-    const result = db.prepare('INSERT INTO expenses (category, description, amount, date, user_id) VALUES (?, ?, ?, ?, ?)')
-      .run(category, description || '', amount, date || new Date().toISOString().split('T')[0], req.user.id);
+    const body = await request.json().catch(() => ({}));
+    const { category, description, amount, date, branch_id, receipt } = body;
 
-    const expense = db.prepare('SELECT * FROM expenses WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json(expense);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (!description || !amount) {
+      return json({ error: 'description and amount are required' }, 400);
+    }
+
+    const now = new Date().toISOString();
+    const info = await run(
+      db,
+      `INSERT INTO expenses (category, description, amount, date, user_id, branch_id, receipt, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        category || null, description, amount,
+        date || now.split('T')[0], authUser.id,
+        branch_id || null, receipt || null, now
+      ]
+    );
+
+    const expense = await first(db, 'SELECT * FROM expenses WHERE id = ?', [info.lastInsertRowid]);
+    return json(expense, 201);
   }
-});
 
-export default router;
+  return json({ error: 'Not found' }, 404);
+}

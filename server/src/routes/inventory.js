@@ -1,113 +1,185 @@
-import { Router } from 'express';
-import db from '../database/connection.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { first, all, run, json, authenticate } from '../utils/d1.js';
 
-const router = Router();
+export async function inventoryRoutes(request, env, path, db) {
+  const parts = path.split('/').filter(Boolean);
+  const method = request.method;
+  const segment = parts[0] || '';
+  const url = new URL(request.url);
+  const searchParams = url.searchParams;
 
-router.get('/batches', authenticateToken, (req, res) => {
-  try {
-    const { medicine_id, status = 'active' } = req.query;
-    let query = `SELECT b.*, m.brand_name, m.generic_name, m.strength, m.dosage_form, s.name as supplier_name
-      FROM batches b JOIN medicines m ON b.medicine_id = m.id LEFT JOIN suppliers s ON b.supplier_id = s.id WHERE b.status = ?`;
-    const params = [status];
-    if (medicine_id) { query += ' AND b.medicine_id = ?'; params.push(medicine_id); }
-    query += ' ORDER BY b.expiry_date ASC';
-    const batches = db.prepare(query).all(...params);
-    res.json(batches);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  if (method === 'GET' && segment === 'batches') {
+    const medicineId = searchParams.get('medicine_id');
+    let sql = `SELECT b.*, m.brand_name, m.barcode
+               FROM batches b
+               JOIN medicines m ON m.id = b.medicine_id
+               WHERE b.quantity > 0`;
+    const params = [];
+
+    if (medicineId) {
+      sql += ' AND b.medicine_id = ?';
+      params.push(parseInt(medicineId));
+    }
+
+    sql += ' ORDER BY b.expiry_date ASC';
+    const batches = await all(db, sql, params);
+    return json(batches);
   }
-});
 
-router.post('/stock-in', authenticateToken, (req, res) => {
-  try {
-    const { medicine_id, batch_number, quantity, purchase_price, selling_price, expiry_date, supplier_id } = req.body;
+  if (method === 'POST' && segment === 'stock-in') {
+    const authUser = await authenticate(request, env);
+    if (!authUser) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const { medicine_id, batch_number, quantity, purchase_price, selling_price, expiry_date, supplier_id, purchase_id, branch_id } = body;
+
     if (!medicine_id || !batch_number || !quantity || !expiry_date) {
-      return res.status(400).json({ error: 'Required fields missing' });
+      return json({ error: 'medicine_id, batch_number, quantity, and expiry_date are required' }, 400);
     }
 
-    const existing = db.prepare('SELECT id FROM batches WHERE medicine_id = ? AND batch_number = ?').get(medicine_id, batch_number);
-    if (existing) {
-      db.prepare('UPDATE batches SET quantity = quantity + ? WHERE id = ?').run(quantity, existing.id);
-      const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(existing.id);
-      return res.json(batch);
+    const medicine = await first(db, 'SELECT id, purchase_price, default_selling_price FROM medicines WHERE id = ? AND is_active = 1', [medicine_id]);
+    if (!medicine) {
+      return json({ error: 'Medicine not found' }, 404);
     }
 
-    const medicine = db.prepare('SELECT default_selling_price FROM medicines WHERE id = ?').get(medicine_id);
-    const result = db.prepare(`
-      INSERT INTO batches (medicine_id, batch_number, quantity, initial_quantity, purchase_price, selling_price, expiry_date, supplier_id, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')
-    `).run(medicine_id, batch_number, quantity, quantity, purchase_price || 0, selling_price || medicine?.default_selling_price || 0, expiry_date, supplier_id || null);
+    const now = new Date().toISOString();
+    const finalPurchasePrice = purchase_price || medicine.purchase_price;
+    const finalSellingPrice = selling_price || medicine.default_selling_price;
 
-    const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json(batch);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+    const existingBatch = await first(
+      db,
+      'SELECT id, quantity FROM batches WHERE medicine_id = ? AND batch_number = ?',
+      [medicine_id, batch_number]
+    );
 
-router.post('/adjust', authenticateToken, (req, res) => {
-  try {
-    const { medicine_id, batch_id, adjustment_type, quantity, reason } = req.body;
-    if (!medicine_id || !adjustment_type || !quantity) {
-      return res.status(400).json({ error: 'Required fields missing' });
+    let batchId;
+    if (existingBatch) {
+      const newQty = existingBatch.quantity + quantity;
+      await run(
+        db,
+        'UPDATE batches SET quantity = ?, purchase_price = ?, selling_price = ? WHERE id = ?',
+        [newQty, finalPurchasePrice, finalSellingPrice, existingBatch.id]
+      );
+      batchId = existingBatch.id;
+    } else {
+      const info = await run(
+        db,
+        `INSERT INTO batches (medicine_id, batch_number, quantity, initial_quantity, purchase_price, selling_price, expiry_date, supplier_id, purchase_id, branch_id, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+        [medicine_id, batch_number, quantity, quantity, finalPurchasePrice, finalSellingPrice, expiry_date, supplier_id || null, purchase_id || null, branch_id || null, now]
+      );
+      batchId = info.lastInsertRowid;
     }
 
-    if (batch_id) {
-      const batch = db.prepare('SELECT * FROM batches WHERE id = ?').get(batch_id);
-      if (!batch) return res.status(404).json({ error: 'Batch not found' });
+    await run(
+      db,
+      `INSERT INTO inventory_adjustments (medicine_id, batch_id, adjustment_type, quantity, reason, user_id, created_at)
+       VALUES (?, ?, 'stock_in', ?, ?, ?, ?)`,
+      [medicine_id, batchId, quantity, `Stock in: ${batch_number}`, authUser.id, now]
+    );
 
-      const newQty = adjustment_type === 'add' ? batch.quantity + quantity : batch.quantity - quantity;
-      if (newQty < 0) return res.status(400).json({ error: 'Insufficient stock' });
-      db.prepare('UPDATE batches SET quantity = ? WHERE id = ?').run(newQty, batch_id);
+    const batch = await first(db, 'SELECT * FROM batches WHERE id = ?', [batchId]);
+    return json(batch, 201);
+  }
+
+  if (method === 'POST' && segment === 'adjust') {
+    const authUser = await authenticate(request, env);
+    if (!authUser) {
+      return json({ error: 'Unauthorized' }, 401);
     }
 
-    db.prepare('INSERT INTO inventory_adjustments (medicine_id, batch_id, adjustment_type, quantity, reason, user_id) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(medicine_id, batch_id || null, adjustment_type, quantity, reason || '', req.user.id);
+    const body = await request.json().catch(() => ({}));
+    const { medicine_id, batch_id, adjustment_type, quantity, reason } = body;
 
-    res.json({ message: 'Stock adjusted successfully' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    if (!medicine_id || !batch_id || adjustment_type === undefined || quantity === undefined) {
+      return json({ error: 'medicine_id, batch_id, adjustment_type, and quantity are required' }, 400);
+    }
+
+    const batch = await first(db, 'SELECT * FROM batches WHERE id = ?', [batch_id]);
+    if (!batch) {
+      return json({ error: 'Batch not found' }, 404);
+    }
+
+    let newQty;
+    if (adjustment_type === 'increase') {
+      newQty = batch.quantity + Math.abs(quantity);
+    } else if (adjustment_type === 'decrease') {
+      newQty = batch.quantity - Math.abs(quantity);
+      if (newQty < 0) {
+        return json({ error: 'Adjustment would result in negative stock' }, 400);
+      }
+    } else {
+      return json({ error: 'adjustment_type must be increase or decrease' }, 400);
+    }
+
+    await run(db, 'UPDATE batches SET quantity = ? WHERE id = ?', [newQty, batch_id]);
+
+    await run(
+      db,
+      `INSERT INTO inventory_adjustments (medicine_id, batch_id, adjustment_type, quantity, reason, user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [medicine_id, batch_id, adjustment_type, quantity, reason || 'Manual adjustment', authUser.id, new Date().toISOString()]
+    );
+
+    const updated = await first(db, 'SELECT * FROM batches WHERE id = ?', [batch_id]);
+    return json(updated);
   }
-});
 
-router.get('/stock-take', authenticateToken, (req, res) => {
-  try {
-    const stock = db.prepare(`
-      SELECT m.id, m.brand_name, m.generic_name, m.strength, m.dosage_form,
-        COALESCE(SUM(b.quantity), 0) as system_stock, mc.name as category_name
-      FROM medicines m
-      LEFT JOIN batches b ON b.medicine_id = m.id AND b.status = 'active'
-      LEFT JOIN medicine_categories mc ON m.category_id = mc.id
-      WHERE m.is_active = 1
-      GROUP BY m.id
-      ORDER BY m.brand_name
-    `).all();
-    res.json(stock);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+  if (method === 'GET' && segment === 'stock-take') {
+    const results = await all(
+      db,
+      `SELECT m.id, m.brand_name, m.barcode, m.category_id, mc.name as category_name, m.unit,
+              COALESCE(SUM(b.quantity), 0) as total_stock,
+              COALESCE(SUM(b.initial_quantity), 0) as total_received,
+              COUNT(b.id) as batch_count
+       FROM medicines m
+       LEFT JOIN medicine_categories mc ON mc.id = m.category_id
+       LEFT JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
+       WHERE m.is_active = 1
+       GROUP BY m.id
+       ORDER BY m.brand_name`
+    );
+    return json(results);
   }
-});
 
-router.get('/summary', authenticateToken, (req, res) => {
-  try {
-    const totalMedicines = db.prepare('SELECT COUNT(*) as count FROM medicines WHERE is_active = 1').get().count;
-    const totalStock = db.prepare("SELECT COALESCE(SUM(quantity), 0) as total FROM batches WHERE status = 'active'").get().total;
-    const totalBatches = db.prepare("SELECT COUNT(*) as count FROM batches WHERE status = 'active'").get().count;
-    const expiringCount = db.prepare("SELECT COUNT(*) as count FROM batches WHERE status = 'active' AND expiry_date <= date('now', '+90 days') AND expiry_date > date('now')").get().count;
-    const lowStockCount = db.prepare(`
-      SELECT COUNT(*) as count FROM (
-        SELECT m.id, COALESCE(SUM(b.quantity), 0) as stock
-        FROM medicines m LEFT JOIN batches b ON b.medicine_id = m.id AND b.status = 'active'
-        WHERE m.is_active = 1 GROUP BY m.id HAVING stock <= 20
-      )
-    `).get().count;
-    const expiredCount = db.prepare("SELECT COUNT(*) as count FROM batches WHERE status = 'active' AND expiry_date <= date('now')").get().count;
+  if (method === 'GET' && segment === 'summary') {
+    const totalMedicines = await first(db, 'SELECT COUNT(*) as count FROM medicines WHERE is_active = 1');
+    const totalBatches = await first(db, 'SELECT COUNT(*) as count FROM batches WHERE quantity > 0');
+    const lowStockCount = await first(
+      db,
+      `SELECT COUNT(DISTINCT m.id) as count
+       FROM medicines m
+       LEFT JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
+       WHERE m.is_active = 1
+       GROUP BY m.id
+       HAVING COALESCE(SUM(b.quantity), 0) <= 10`
+    );
+    const expiringSoon = await first(
+      db,
+      `SELECT COUNT(*) as count FROM batches b
+       JOIN medicines m ON m.id = b.medicine_id
+       WHERE b.quantity > 0 AND m.is_active = 1
+       AND b.expiry_date <= date('now', '+90 days')`
+    );
+    const totalStockValue = await first(
+      db,
+      'SELECT COALESCE(SUM(quantity * purchase_price), 0) as value FROM batches WHERE quantity > 0'
+    );
+    const totalRetailValue = await first(
+      db,
+      'SELECT COALESCE(SUM(quantity * selling_price), 0) as value FROM batches WHERE quantity > 0'
+    );
 
-    res.json({ totalMedicines, totalStock, totalBatches, expiringCount, lowStockCount, expiredCount });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return json({
+      total_medicines: totalMedicines ? totalMedicines.count : 0,
+      total_batches: totalBatches ? totalBatches.count : 0,
+      low_stock_count: lowStockCount ? lowStockCount.count : 0,
+      expiring_soon_count: expiringSoon ? expiringSoon.count : 0,
+      total_stock_value: totalStockValue ? totalStockValue.value : 0,
+      total_retail_value: totalRetailValue ? totalRetailValue.value : 0,
+    });
   }
-});
 
-export default router;
+  return json({ error: 'Not found' }, 404);
+}

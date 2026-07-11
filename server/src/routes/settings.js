@@ -1,99 +1,160 @@
-import { Router } from 'express';
-import db from '../database/connection.js';
-import { authenticateToken, requireRole } from '../middleware/auth.js';
+import { first, all, run, json, authenticate } from '../utils/d1.js';
 
-const router = Router();
+export async function settingsRoutes(request, env, path, db) {
+  const parts = path.split('/').filter(Boolean);
+  const method = request.method;
+  const segment = parts[0] || '';
+  const url = new URL(request.url);
+  const searchParams = url.searchParams;
 
-router.get('/', authenticateToken, (req, res) => {
-  try {
-    const settings = db.prepare('SELECT * FROM settings ORDER BY category, key').all();
-    const grouped = {};
-    for (const s of settings) {
-      if (!grouped[s.category]) grouped[s.category] = {};
-      grouped[s.category][s.key] = s.value;
-    }
-    res.json(grouped);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+  if (method === 'GET' && segment === 'audit-logs') {
+    const page = parseInt(searchParams.get('page')) || 1;
+    const limit = parseInt(searchParams.get('limit')) || 50;
+    const offset = (page - 1) * limit;
+    const userId = searchParams.get('user_id');
 
-router.put('/', authenticateToken, requireRole('admin'), (req, res) => {
-  try {
-    const updates = req.body;
-    const upsert = db.prepare('INSERT INTO settings (key, value, category) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP');
-
-    for (const [category, settings] of Object.entries(updates)) {
-      for (const [key, value] of Object.entries(settings)) {
-        upsert.run(key, value, category, value);
-      }
-    }
-
-    res.json({ message: 'Settings updated' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Audit Logs
-router.get('/audit-logs', authenticateToken, requireRole('admin'), (req, res) => {
-  try {
-    const { action, entity, user_id, page = 1, limit = 50 } = req.query;
-    let query = 'SELECT al.*, u.full_name as user_name FROM audit_logs al LEFT JOIN users u ON al.user_id = u.id WHERE 1=1';
+    let where = 'WHERE 1=1';
     const params = [];
-    if (action) { query += ' AND al.action = ?'; params.push(action); }
-    if (entity) { query += ' AND al.entity = ?'; params.push(entity); }
-    if (user_id) { query += ' AND al.user_id = ?'; params.push(user_id); }
-    query += ' ORDER BY al.created_at DESC LIMIT ? OFFSET ?';
-    params.push(parseInt(limit), (parseInt(page) - 1) * parseInt(limit));
-    const logs = db.prepare(query).all(...params);
-    res.json(logs);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
-// Branches
-router.get('/branches', authenticateToken, (req, res) => {
-  try {
-    const branches = db.prepare('SELECT b.*, u.full_name as manager_name FROM branches b LEFT JOIN users u ON b.manager_id = u.id WHERE b.is_active = 1').all();
-    res.json(branches);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+    if (userId) {
+      where += ' AND al.user_id = ?';
+      params.push(parseInt(userId));
+    }
 
-router.post('/branches', authenticateToken, requireRole('admin'), (req, res) => {
-  try {
-    const { name, address, phone, manager_id } = req.body;
-    const result = db.prepare('INSERT INTO branches (name, address, phone, manager_id) VALUES (?, ?, ?, ?)').run(name, address || '', phone || '', manager_id || null);
-    const branch = db.prepare('SELECT * FROM branches WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json(branch);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+    const countRow = await first(db, `SELECT COUNT(*) as total FROM audit_logs al ${where}`, params);
+    const total = countRow ? countRow.total : 0;
 
-// Insurance Providers
-router.get('/insurance', authenticateToken, (req, res) => {
-  try {
-    const providers = db.prepare('SELECT * FROM insurance_providers WHERE is_active = 1').all();
-    res.json(providers);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
+    const logs = await all(
+      db,
+      `SELECT al.*, u.full_name as user_name
+       FROM audit_logs al
+       LEFT JOIN users u ON u.id = al.user_id
+       ${where}
+       ORDER BY al.created_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset]
+    );
 
-router.post('/insurance', authenticateToken, requireRole('admin'), (req, res) => {
-  try {
-    const { name, contact_person, phone, email, claim_percentage } = req.body;
-    const result = db.prepare('INSERT INTO insurance_providers (name, contact_person, phone, email, claim_percentage) VALUES (?, ?, ?, ?, ?)')
-      .run(name, contact_person || null, phone || null, email || null, claim_percentage || 80);
-    const provider = db.prepare('SELECT * FROM insurance_providers WHERE id = ?').get(result.lastInsertRowid);
-    res.status(201).json(provider);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    return json({ logs, total, page, limit, totalPages: Math.ceil(total / limit) });
   }
-});
 
-export default router;
+  if (method === 'GET' && segment === 'branches') {
+    const branches = await all(db, 'SELECT * FROM branches ORDER BY name');
+    return json(branches);
+  }
+
+  if (method === 'POST' && segment === 'branches') {
+    const authUser = await authenticate(request, env);
+    if (!authUser) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
+    if (authUser.role !== 'admin' && authUser.role !== 'manager') {
+      return json({ error: 'Insufficient permissions' }, 403);
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const { name, address, phone, manager_id } = body;
+
+    if (!name) {
+      return json({ error: 'Branch name is required' }, 400);
+    }
+
+    const now = new Date().toISOString();
+    const info = await run(
+      db,
+      'INSERT INTO branches (name, address, phone, manager_id, is_active, created_at) VALUES (?, ?, ?, ?, 1, ?)',
+      [name, address || null, phone || null, manager_id || null, now]
+    );
+
+    const branch = await first(db, 'SELECT * FROM branches WHERE id = ?', [info.lastInsertRowid]);
+    return json(branch, 201);
+  }
+
+  if (method === 'GET' && segment === 'insurance') {
+    const providers = await all(db, 'SELECT * FROM insurance_providers ORDER BY name');
+    return json(providers);
+  }
+
+  if (method === 'POST' && segment === 'insurance') {
+    const authUser = await authenticate(request, env);
+    if (!authUser) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
+    if (authUser.role !== 'admin' && authUser.role !== 'manager') {
+      return json({ error: 'Insufficient permissions' }, 403);
+    }
+
+    const body = await request.json().catch(() => ({}));
+    const { name, contact_person, phone, email, claim_percentage } = body;
+
+    if (!name) {
+      return json({ error: 'Insurance provider name is required' }, 400);
+    }
+
+    const now = new Date().toISOString();
+    const info = await run(
+      db,
+      'INSERT INTO insurance_providers (name, contact_person, phone, email, claim_percentage, is_active, created_at) VALUES (?, ?, ?, ?, ?, 1, ?)',
+      [name, contact_person || null, phone || null, email || null, claim_percentage || 0, now]
+    );
+
+    const provider = await first(db, 'SELECT * FROM insurance_providers WHERE id = ?', [info.lastInsertRowid]);
+    return json(provider, 201);
+  }
+
+  if (method === 'GET' && !segment) {
+    const settings = await all(db, 'SELECT * FROM settings ORDER BY key');
+    const settingsObj = {};
+    for (const setting of settings) {
+      settingsObj[setting.key] = { value: setting.value, category: setting.category };
+    }
+    return json(settingsObj);
+  }
+
+  if (method === 'PUT' && !segment) {
+    const authUser = await authenticate(request, env);
+    if (!authUser) {
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
+    if (authUser.role !== 'admin' && authUser.role !== 'manager') {
+      return json({ error: 'Insufficient permissions' }, 403);
+    }
+
+    const body = await request.json().catch(() => ({}));
+    if (!body || Object.keys(body).length === 0) {
+      return json({ error: 'Settings object is required' }, 400);
+    }
+
+    const now = new Date().toISOString();
+
+    for (const [key, val] of Object.entries(body)) {
+      const value = typeof val === 'object' ? JSON.stringify(val) : String(val);
+      const category = typeof val === 'object' && val.category ? val.category : null;
+
+      const existing = await first(db, 'SELECT id FROM settings WHERE key = ?', [key]);
+      if (existing) {
+        await run(db, 'UPDATE settings SET value = ?, updated_at = ? WHERE key = ?', [value, now, key]);
+      } else {
+        await run(db, 'INSERT INTO settings (key, value, category, updated_at) VALUES (?, ?, ?, ?)', [key, value, category, now]);
+      }
+
+      await run(
+        db,
+        'INSERT INTO audit_logs (user_id, action, entity, entity_id, details, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [authUser.id, 'settings_update', 'setting', key, value, null, now]
+      );
+    }
+
+    const settings = await all(db, 'SELECT * FROM settings ORDER BY key');
+    const settingsObj = {};
+    for (const setting of settings) {
+      settingsObj[setting.key] = { value: setting.value, category: setting.category };
+    }
+    return json(settingsObj);
+  }
+
+  return json({ error: 'Not found' }, 404);
+}

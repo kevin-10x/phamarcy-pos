@@ -40,3 +40,4 @@ Desktop.ini
 # Misc
 coverage/
 .cache/
+.wrangler/
