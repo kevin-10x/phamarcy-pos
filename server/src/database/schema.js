@@ -284,61 +284,47 @@ const SEED_USERS = [
 ];
 
 export async function initializeDatabase(db) {
-  for (const sql of TABLES) {
-    try {
-      await db.prepare(sql).run();
-    } catch (e) {
-      console.error('Schema init error:', e.message, sql.substring(0, 80));
-    }
-  }
-  for (const u of SEED_USERS) {
-    try {
-      const bound = db.prepare(
-        `INSERT OR IGNORE INTO users (username, email, password, full_name, role, phone, is_active)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).bind(...u);
-      await bound.run();
-    } catch (e) {
-      console.error('Seed user error:', e.message);
-    }
-  }
-  try {
-    const bound = db.prepare(
-      `INSERT OR IGNORE INTO branches (name, address, phone, is_active) VALUES (?, ?, ?, ?)`
-    ).bind('Main Branch', 'Kenyatta Avenue, Nairobi', '+254700000000', 1);
-    await bound.run();
-  } catch (e) {
-    console.error('Seed branch error:', e.message);
-  }
+  const tableStmts = TABLES.map(sql => db.prepare(sql));
+  await db.batch(tableStmts);
 
-  for (const cat of medicineCategories) {
-    try {
-      await db.prepare(`INSERT OR IGNORE INTO medicine_categories (name, description) VALUES (?, ?)`)
-        .bind(cat.name, cat.description).run();
-    } catch (e) {
-      console.error('Seed category error:', e.message);
+  const catIdMap = {};
+  const catStmts = medicineCategories.map(cat => {
+    catIdMap[cat.name] = null;
+    return db.prepare(`INSERT OR IGNORE INTO medicine_categories (name, description) VALUES (?, ?)`)
+      .bind(cat.name, cat.description);
+  });
+  await db.batch(catStmts);
+
+  const catRows = await db.prepare(`SELECT id, name FROM medicine_categories`).all();
+  if (catRows.results) {
+    for (const row of catRows.results) {
+      catIdMap[row.name] = row.id;
     }
   }
 
-  for (const med of kenyanMedicines) {
-    try {
-      const catRow = await db.prepare(`SELECT id FROM medicine_categories WHERE name = ?`).bind(med.category).first();
-      const categoryId = catRow ? catRow.id : null;
-      const barcode = med.brand_name.replace(/\s+/g, '').substring(0, 8).toUpperCase() + Math.floor(Math.random() * 9000 + 1000);
-      await db.prepare(
-        `INSERT OR IGNORE INTO medicines (brand_name, generic_name, strength, dosage_form, category_id, manufacturer, unit, default_selling_price, purchase_price, vat_rate, prescription_required, controlled_drug, storage_requirements, alternative_brands, is_active, barcode)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 16, ?, ?, ?, ?, 1, ?)`
-      ).bind(
-        med.brand_name, med.generic_name, med.strength || null, med.dosage_form || null,
-        categoryId, med.manufacturer || null, med.unit || 'tablet',
-        med.default_selling_price || 0, (med.default_selling_price || 0) * 0.7,
-        med.prescription_required ? 1 : 0, med.controlled_drug ? 1 : 0,
-        med.storage_requirements || null, med.alternative_brands || null, barcode
-      ).run();
-    } catch (e) {
-      if (!e.message.includes('UNIQUE')) {
-        console.error('Seed medicine error:', med.brand_name, e.message);
-      }
-    }
-  }
+  const userStmts = SEED_USERS.map(u =>
+    db.prepare(`INSERT OR IGNORE INTO users (username, email, password, full_name, role, phone, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(...u)
+  );
+  userStmts.push(
+    db.prepare(`INSERT OR IGNORE INTO branches (name, address, phone, is_active) VALUES (?, ?, ?, ?)`)
+      .bind('Main Branch', 'Kenyatta Avenue, Nairobi', '+254700000000', 1)
+  );
+  await db.batch(userStmts);
+
+  const medStmts = kenyanMedicines.map(med => {
+    const categoryId = catIdMap[med.category] || null;
+    const barcode = med.brand_name.replace(/\s+/g, '').substring(0, 8).toUpperCase() + Math.floor(Math.random() * 9000 + 1000);
+    return db.prepare(
+      `INSERT OR IGNORE INTO medicines (brand_name, generic_name, strength, dosage_form, category_id, manufacturer, unit, default_selling_price, purchase_price, vat_rate, prescription_required, controlled_drug, storage_requirements, alternative_brands, is_active, barcode)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 16, ?, ?, ?, ?, 1, ?)`
+    ).bind(
+      med.brand_name, med.generic_name, med.strength || null, med.dosage_form || null,
+      categoryId, med.manufacturer || null, med.unit || 'tablet',
+      med.default_selling_price || 0, (med.default_selling_price || 0) * 0.7,
+      med.prescription_required ? 1 : 0, med.controlled_drug ? 1 : 0,
+      med.storage_requirements || null, med.alternative_brands || null, barcode
+    );
+  });
+  await db.batch(medStmts);
 }
