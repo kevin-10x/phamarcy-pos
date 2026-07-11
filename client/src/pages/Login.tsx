@@ -39,7 +39,7 @@ export default function Login() {
       const res = await post<AuthResponse>('/api/auth/login', { username, password })
       login(res.token, res.user)
       toast.success('Welcome back!')
-      navigate('/')
+      navigate('/pos')
     } catch (err: any) {
       toast.error(err?.message || 'Invalid credentials')
     } finally {
@@ -70,9 +70,14 @@ export default function Login() {
         email: regEmail || undefined,
         phone: regPhone || undefined,
       })
-      login(res.token, res.user)
-      toast.success('Account created! Welcome to Hauzral Pharmacy POS')
-      navigate('/')
+      toast.success('Account created! Please sign in')
+      setRegName('')
+      setRegEmail('')
+      setRegPhone('')
+      setRegUsername('')
+      setRegPassword('')
+      setRegConfirm('')
+      setTab('login')
     } catch (err: any) {
       toast.error(err?.message || 'Registration failed')
     } finally {
