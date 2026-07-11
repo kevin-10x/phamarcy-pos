@@ -1,0 +1,17 @@
+{
+  "name": "hauzral-pharmacy-pos",
+  "version": "1.0.0",
+  "description": "Hauzral Pharmacy POS - Complete Pharmacy Management System",
+  "scripts": {
+    "install-all": "cd server && npm install && cd ../client && npm install",
+    "seed": "cd server && node src/database/seed.js",
+    "server": "cd server && node src/index.js",
+    "client": "cd client && npx vite --host",
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "build": "cd client && npx vite build",
+    "start": "npm run server"
+  },
+  "keywords": ["pharmacy", "pos", "kenya"],
+  "author": "Hauzral",
+  "license": "MIT"
+}

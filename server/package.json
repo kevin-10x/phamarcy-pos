@@ -1,0 +1,24 @@
+{
+  "name": "hauzral-pharmacy-pos-server",
+  "version": "1.0.0",
+  "description": "Hauzral Pharmacy POS Backend",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "seed": "node src/database/seed.js",
+    "migrate": "node src/database/schema.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "sql.js": "^1.11.0",
+    "uuid": "^10.0.0"
+  }
+}
