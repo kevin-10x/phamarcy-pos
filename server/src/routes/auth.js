@@ -36,19 +36,25 @@ export async function authRoutes(request, env, path, db) {
 
   if (method === 'POST' && segment === 'register') {
     const authUser = await authenticate(request, env);
-    if (!authUser) {
-      return json({ error: 'Unauthorized' }, 401);
-    }
-
-    if (authUser.role !== 'admin' && authUser.role !== 'manager') {
-      return json({ error: 'Insufficient permissions' }, 403);
-    }
 
     const body = await request.json().catch(() => ({}));
     const { username, password: rawPassword, full_name, role, email, phone } = body;
 
     if (!username || !rawPassword || !full_name) {
       return json({ error: 'Username, password, and full_name are required' }, 400);
+    }
+
+    if (rawPassword.length < 6) {
+      return json({ error: 'Password must be at least 6 characters' }, 400);
+    }
+
+    if (!authUser) {
+      const existingAdmin = await first(db, "SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+      if (existingAdmin) {
+        return json({ error: 'Registration requires admin authorization' }, 403);
+      }
+    } else if (authUser.role !== 'admin' && authUser.role !== 'manager') {
+      return json({ error: 'Insufficient permissions' }, 403);
     }
 
     const existing = await first(db, 'SELECT id FROM users WHERE username = ?', [username]);
@@ -59,14 +65,22 @@ export async function authRoutes(request, env, path, db) {
     const hashedPassword = bcrypt.hashSync(rawPassword, 10);
     const now = new Date().toISOString();
 
+    const assignedRole = authUser ? (role || 'cashier') : 'admin';
+
     const info = await run(
       db,
       'INSERT INTO users (username, password, full_name, role, email, phone, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)',
-      [username, hashedPassword, full_name, role || 'cashier', email || null, phone || null, now]
+      [username, hashedPassword, full_name, assignedRole, email || null, phone || null, now]
     );
 
-    const newUser = await first(db, 'SELECT id, username, full_name, role, email, phone, is_active, created_at FROM users WHERE id = ?', [info.lastInsertRowid]);
-    return json(newUser, 201);
+    const token = await signJwt(
+      { id: info.lastInsertRowid, username, role: assignedRole, full_name },
+      env.JWT_SECRET || 'hauzral-pharmacy-pos-secret-key-2024',
+      604800
+    );
+
+    const newUser = { id: info.lastInsertRowid, username, full_name, role: assignedRole, email: email || null, phone: phone || null, is_active: 1, created_at: now };
+    return json({ token, user: newUser }, 201);
   }
 
   if (method === 'GET' && segment === 'me') {
