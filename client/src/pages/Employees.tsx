@@ -16,7 +16,7 @@ import {
   Phone,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { get, post } from '../utils/api'
+import { get, post, put } from '../utils/api'
 import { useAuth } from '../context/AuthContext'
 import type { User } from '../types'
 
@@ -67,7 +67,7 @@ export default function Employees() {
   const fetchEmployees = async () => {
     setLoading(true)
     try {
-      const res = await get<{ employees: User[] }>('/api/employees')
+      const res = await get<{ employees: User[] }>('/employees')
       setEmployees(res.employees || [])
     } catch {
       toast.error('Failed to load employees')
@@ -78,7 +78,7 @@ export default function Employees() {
 
   const fetchPerformance = async () => {
     try {
-      const res = await get<{ performance: PerformanceData[] }>('/api/employees/performance')
+      const res = await get<{ performance: PerformanceData[] }>('/employees/performance')
       setPerformance(res.performance || [])
     } catch {
       toast.error('Failed to load performance data')
@@ -87,7 +87,7 @@ export default function Employees() {
 
   const fetchAuditLogs = async () => {
     try {
-      const res = await get<{ logs: AuditLog[] }>('/api/employees/activity')
+      const res = await get<{ logs: AuditLog[] }>('/employees/activity-log')
       setAuditLogs(res.logs || [])
     } catch {
       toast.error('Failed to load activity logs')
@@ -406,7 +406,7 @@ function AddEmployeeModal({ onClose, onAdded }: { onClose: () => void; onAdded: 
     }
     setSubmitting(true)
     try {
-      await post('/api/employees', form)
+      await post('/employees', form)
       toast.success('Employee created successfully')
       onAdded()
     } catch (err: any) {
@@ -481,7 +481,7 @@ function EditEmployeeModal({ employee, onClose, onUpdated }: { employee: User; o
     e.preventDefault()
     setSubmitting(true)
     try {
-      await post(`/api/auth/users/${employee.id}`, { ...form, _method: 'PUT' })
+      await put(`/employees/${employee.id}`, form)
       toast.success('Employee updated successfully')
       onUpdated()
     } catch (err: any) {
@@ -547,9 +547,8 @@ function DeactivateModal({ employee, onClose, onConfirmed }: { employee: User; o
   const handleConfirm = async () => {
     setSubmitting(true)
     try {
-      await post(`/api/auth/users/${employee.id}`, {
+      await put(`/employees/${employee.id}`, {
         is_active: !employee.is_active,
-        _method: 'PUT',
       })
       toast.success(employee.is_active ? 'Employee deactivated' : 'Employee activated')
       onConfirmed()

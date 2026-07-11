@@ -160,7 +160,7 @@ function SalesReport({ loading, setLoading }: { loading: boolean; setLoading: (v
     setLoading(true)
     try {
       const params = `?period=${period}&start_date=${startDate}&end_date=${endDate}`
-      const res = await get<SalesReportData>(`/api/reports/sales${params}`)
+      const res = await get<SalesReportData>(`/reports/sales${params}`)
       setData(res)
     } catch {
       toast.error('Failed to load sales report')
@@ -310,7 +310,7 @@ function InventoryReport({ loading, setLoading }: { loading: boolean; setLoading
     const fetchInventoryReport = async () => {
       setLoading(true)
       try {
-        const res = await get<InventoryReportData>('/api/reports/inventory')
+        const res = await get<InventoryReportData>('/reports/inventory')
         setData(res)
       } catch {
         toast.error('Failed to load inventory report')
@@ -474,7 +474,7 @@ function FinancialReport({ loading, setLoading }: { loading: boolean; setLoading
     const fetchFinancialReport = async () => {
       setLoading(true)
       try {
-        const res = await get<FinancialReportData>(`/api/reports/financial?start_date=${startDate}&end_date=${endDate}`)
+        const res = await get<FinancialReportData>(`/reports/financial?start_date=${startDate}&end_date=${endDate}`)
         setData(res)
       } catch {
         toast.error('Failed to load financial report')
@@ -605,7 +605,7 @@ function CashSummary({ loading, setLoading }: { loading: boolean; setLoading: (v
     const fetchCashSummary = async () => {
       setLoading(true)
       try {
-        const res = await get<CashSummaryData>('/api/reports/cash-summary')
+        const res = await get<CashSummaryData>('/reports/cash-summary')
         setData(res)
       } catch {
         toast.error('Failed to load cash summary')

@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -12,6 +12,7 @@ import AIAssistant from './pages/AIAssistant'
 import Employees from './pages/Employees'
 import Settings from './pages/Settings'
 import Notifications from './pages/Notifications'
+import Layout from './components/Layout'
 
 function ProtectedRoute({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {
   const { user, isLoading } = useAuth()
@@ -40,14 +41,6 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route
-        path="/"
-        element={
-          <ProtectedRoute>
-            <Dashboard />
-          </ProtectedRoute>
-        }
-      />
-      <Route
         path="/pos"
         element={
           <ProtectedRoute>
@@ -56,85 +49,24 @@ export default function App() {
         }
       />
       <Route
-        path="/inventory"
         element={
           <ProtectedRoute>
-            <Inventory />
+            <Layout />
           </ProtectedRoute>
         }
-      />
-      <Route
-        path="/medicines"
-        element={
-          <ProtectedRoute>
-            <Inventory />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/customers"
-        element={
-          <ProtectedRoute>
-            <Customers />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/suppliers"
-        element={
-          <ProtectedRoute>
-            <Suppliers />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/prescriptions"
-        element={
-          <ProtectedRoute>
-            <Prescriptions />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/reports"
-        element={
-          <ProtectedRoute>
-            <Reports />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/ai"
-        element={
-          <ProtectedRoute>
-            <AIAssistant />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/employees"
-        element={
-          <ProtectedRoute adminOnly>
-            <Employees />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/settings"
-        element={
-          <ProtectedRoute adminOnly>
-            <Settings />
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/notifications"
-        element={
-          <ProtectedRoute>
-            <Notifications />
-          </ProtectedRoute>
-        }
-      />
+      >
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/inventory" element={<Inventory />} />
+        <Route path="/medicines" element={<Inventory />} />
+        <Route path="/customers" element={<Customers />} />
+        <Route path="/suppliers" element={<Suppliers />} />
+        <Route path="/prescriptions" element={<Prescriptions />} />
+        <Route path="/reports" element={<Reports />} />
+        <Route path="/ai-assistant" element={<AIAssistant />} />
+        <Route path="/employees" element={<Employees />} />
+        <Route path="/settings" element={<Settings />} />
+        <Route path="/notifications" element={<Notifications />} />
+      </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

@@ -92,7 +92,7 @@ export default function Notifications() {
 
   const fetchNotifications = useCallback(async () => {
     try {
-      const res = await get<{ notifications: Notification[] }>('/api/notifications')
+      const res = await get<{ notifications: Notification[] }>('/notifications')
       setNotifications(res.notifications || [])
     } catch {
       // silent

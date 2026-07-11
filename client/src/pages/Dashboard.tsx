@@ -87,7 +87,7 @@ export default function Dashboard() {
   useEffect(() => {
     const fetchDashboard = async () => {
       try {
-        const res = await get<DashboardData>('/api/reports/dashboard')
+        const res = await get<DashboardData>('/reports/dashboard')
         setData(res)
       } catch {
         toast.error('Failed to load dashboard data')

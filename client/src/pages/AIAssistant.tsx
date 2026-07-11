@@ -87,7 +87,7 @@ export default function AIAssistant() {
     setIsLoading(true)
 
     try {
-      const res = await post<{ response: string }>('/api/ai/chat', { message: text })
+      const res = await post<{ response: string }>('/ai/chat', { message: text })
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'ai',

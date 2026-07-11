@@ -11,11 +11,11 @@ interface Category {
 }
 
 interface PaginatedResponse<T> {
-  data: T[];
+  medicines: T[];
   total: number;
   page: number;
-  per_page: number;
-  total_pages: number;
+  limit: number;
+  totalPages: number;
 }
 
 interface CartItem {
@@ -117,12 +117,12 @@ const Inventory: React.FC = () => {
     try {
       const params = new URLSearchParams();
       params.set('page', String(currentPage));
-      params.set('per_page', String(perPage));
+      params.set('limit', String(perPage));
       if (searchQuery) params.set('search', searchQuery);
-      if (categoryFilter) params.set('category', categoryFilter);
-      const res = await get<PaginatedResponse<Medicine>>(`/api/medicines?${params.toString()}`);
-      setMedicines(res.data);
-      setTotalPages(res.total_pages);
+      if (categoryFilter) params.set('category_id', categoryFilter);
+      const res = await get<PaginatedResponse<Medicine>>(`/medicines?${params.toString()}`);
+      setMedicines(res.medicines || []);
+      setTotalPages(res.totalPages || 1);
     } catch (err) {
       toast.error('Failed to load medicines');
     } finally {
@@ -133,7 +133,7 @@ const Inventory: React.FC = () => {
   // Fetch categories
   const fetchCategories = useCallback(async () => {
     try {
-      const res = await get<Category[]>('/api/medicines/categories');
+      const res = await get<Category[]>('/medicines/categories');
       setCategories(Array.isArray(res) ? res : (res as any).data || []);
     } catch (err) {
       // silent
@@ -144,7 +144,7 @@ const Inventory: React.FC = () => {
   const fetchLowStock = useCallback(async () => {
     setLowStockLoading(true);
     try {
-      const res = await get<Medicine[]>('/api/medicines/low-stock');
+      const res = await get<Medicine[]>('/medicines/low-stock');
       setLowStockMedicines(Array.isArray(res) ? res : (res as any).data || []);
     } catch (err) {
       toast.error('Failed to load low stock medicines');
@@ -157,7 +157,7 @@ const Inventory: React.FC = () => {
   const fetchExpiringSoon = useCallback(async () => {
     setExpiringLoading(true);
     try {
-      const res = await get<Batch[]>('/api/medicines/expiring-soon?days=90');
+      const res = await get<Batch[]>('/medicines/expiry?days=90');
       setExpiringBatches(Array.isArray(res) ? res : (res as any).data || []);
     } catch (err) {
       toast.error('Failed to load expiring batches');
@@ -169,7 +169,7 @@ const Inventory: React.FC = () => {
   // Fetch suppliers
   const fetchSuppliers = useCallback(async () => {
     try {
-      const res = await get<Supplier[]>('/api/suppliers');
+      const res = await get<Supplier[]>('/suppliers');
       setSuppliers(Array.isArray(res) ? res : (res as any).data || []);
     } catch (err) {
       // silent
@@ -180,8 +180,8 @@ const Inventory: React.FC = () => {
   const fetchStockMedicines = useCallback(async () => {
     setStockManagementLoading(true);
     try {
-      const res = await get<Medicine[]>('/api/medicines?per_page=100');
-      const data = Array.isArray(res) ? res : (res as any).data || [];
+      const res = await get<any>('/medicines?limit=100');
+      const data = Array.isArray(res) ? res : res?.medicines || [];
       setStockMedicines(data);
     } catch (err) {
       toast.error('Failed to load medicines');
@@ -226,8 +226,9 @@ const Inventory: React.FC = () => {
       return;
     }
     try {
-      const res = await get<Medicine[]>(`/api/medicines?search=${encodeURIComponent(query)}`);
-      setStockInResults(Array.isArray(res) ? res : (res as any).data || []);
+      const res = await get<any>(`/medicines?search=${encodeURIComponent(query)}`);
+      const list = Array.isArray(res) ? res : res?.medicines || [];
+      setStockInResults(list);
     } catch (err) {
       // silent
     }
@@ -246,7 +247,7 @@ const Inventory: React.FC = () => {
     }
     setStockInSubmitting(true);
     try {
-      await post('/api/stock/in', {
+      await post('/inventory/stock-in', {
         medicine_id: stockInMedicine.id,
         batch_number: stockInForm.batch_number,
         quantity: Number(stockInForm.quantity),
@@ -261,7 +262,7 @@ const Inventory: React.FC = () => {
       setStockInResults([]);
       setStockInForm({ batch_number: '', quantity: '', purchase_price: '', selling_price: '', expiry_date: '', supplier_id: '' });
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to add stock');
+      toast.error('Failed to add stock');
     } finally {
       setStockInSubmitting(false);
     }
@@ -275,8 +276,8 @@ const Inventory: React.FC = () => {
       return;
     }
     try {
-      const res = await get<Medicine[]>(`/api/medicines?search=${encodeURIComponent(query)}`);
-      setAdjResults(Array.isArray(res) ? res : (res as any).data || []);
+      const res = await get<any>(`/medicines?search=${encodeURIComponent(query)}`);
+      setAdjResults(Array.isArray(res) ? res : res?.medicines || []);
     } catch (err) {
       // silent
     }
@@ -288,8 +289,8 @@ const Inventory: React.FC = () => {
     setAdjSearch(med.name);
     setAdjResults([]);
     try {
-      const res = await get<Batch[]>(`/api/medicines/${med.id}/batches`);
-      setAdjBatches(Array.isArray(res) ? res : (res as any).data || []);
+      const res = await get<any>(`/medicines/${med.id}/batches`);
+      setAdjBatches(Array.isArray(res) ? res : res?.batches || []);
     } catch (err) {
       toast.error('Failed to load batches');
     }
@@ -312,7 +313,7 @@ const Inventory: React.FC = () => {
     }
     setAdjSubmitting(true);
     try {
-      await post('/api/stock/adjust', {
+      await post('/inventory/adjust', {
         medicine_id: adjMedicine.id,
         batch_id: Number(adjSelectedBatch),
         adjustment_type: adjForm.adjustment_type,
@@ -327,7 +328,7 @@ const Inventory: React.FC = () => {
       setAdjSelectedBatch('');
       setAdjForm({ adjustment_type: 'add', quantity: '', reason: '' });
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to adjust stock');
+      toast.error('Failed to adjust stock');
     } finally {
       setAdjSubmitting(false);
     }
@@ -339,8 +340,8 @@ const Inventory: React.FC = () => {
     setShowDetailModal(true);
     setDetailLoading(true);
     try {
-      const res = await get<Batch[]>(`/api/medicines/${med.id}/batches`);
-      setDetailBatches(Array.isArray(res) ? res : (res as any).data || []);
+      const res = await get<any>(`/medicines/${med.id}/batches`);
+      setDetailBatches(Array.isArray(res) ? res : res?.batches || []);
     } catch (err) {
       toast.error('Failed to load batch details');
     } finally {
@@ -398,16 +399,16 @@ const Inventory: React.FC = () => {
     };
     try {
       if (editingMedicine) {
-        await put(`/api/medicines/${editingMedicine.id}`, payload);
+        await put(`/medicines/${editingMedicine.id}`, payload);
         toast.success('Medicine updated successfully');
       } else {
-        await post('/api/medicines', payload);
+        await post('/medicines', payload);
         toast.success('Medicine added successfully');
       }
       setShowMedicineModal(false);
       fetchMedicines();
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to save medicine');
+      toast.error('Failed to save medicine');
     } finally {
       setMedicineFormSubmitting(false);
     }
@@ -417,11 +418,11 @@ const Inventory: React.FC = () => {
   const deleteMedicine = async (id: number) => {
     if (!window.confirm('Are you sure you want to delete this medicine?')) return;
     try {
-      await del(`/api/medicines/${id}`);
+      await del(`/medicines/${id}`);
       toast.success('Medicine deleted');
       fetchMedicines();
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to delete medicine');
+      toast.error('Failed to delete medicine');
     }
   };
 

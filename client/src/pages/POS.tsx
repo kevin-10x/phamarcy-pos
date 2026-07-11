@@ -104,7 +104,7 @@ const POS: React.FC = () => {
   useEffect(() => {
     const fetchCategories = async () => {
       try {
-        const res = await get<Category[]>('/api/medicines/categories');
+        const res = await get<Category[]>('/medicines/categories');
         setCategories(Array.isArray(res) ? res : (res as any).data || []);
       } catch (err) {
         // silent
@@ -126,12 +126,12 @@ const POS: React.FC = () => {
       }
       setSearchLoading(true);
       try {
-        let url = `/api/medicines?search=${encodeURIComponent(query)}&per_page=20`;
+        let url = `/medicines?search=${encodeURIComponent(query)}&limit=20`;
         if (selectedCategory) {
-          url += `&category=${encodeURIComponent(selectedCategory)}`;
+          url += `&category_id=${encodeURIComponent(selectedCategory)}`;
         }
-        const res = await get<Medicine[]>(url);
-        setSearchResults(Array.isArray(res) ? res : (res as any).data || []);
+        const res = await get<any>(url);
+        setSearchResults(Array.isArray(res) ? res : res?.medicines || []);
       } catch (err) {
         toast.error('Failed to search medicines');
       } finally {
@@ -145,15 +145,15 @@ const POS: React.FC = () => {
     const fetchMedicines = async () => {
       setSearchLoading(true);
       try {
-        let url = '/api/medicines?per_page=50';
+        let url = '/medicines?limit=50';
         if (selectedCategory) {
-          url += `&category=${encodeURIComponent(selectedCategory)}`;
+          url += `&category_id=${encodeURIComponent(selectedCategory)}`;
         }
         if (searchQuery) {
           url += `&search=${encodeURIComponent(searchQuery)}`;
         }
-        const res = await get<Medicine[]>(url);
-        setSearchResults(Array.isArray(res) ? res : (res as any).data || []);
+        const res = await get<any>(url);
+        setSearchResults(Array.isArray(res) ? res : res?.medicines || []);
       } catch (err) {
         // silent
       } finally {
@@ -171,7 +171,7 @@ const POS: React.FC = () => {
       return;
     }
     try {
-      const res = await get<Customer[]>(`/api/customers?search=${encodeURIComponent(query)}`);
+      const res = await get<Customer[]>(`/customers?search=${encodeURIComponent(query)}`);
       setCustomerResults(Array.isArray(res) ? res : (res as any).data || []);
       setShowCustomerDropdown(true);
     } catch (err) {
@@ -187,7 +187,7 @@ const POS: React.FC = () => {
       return;
     }
     try {
-      const res = await get<Prescription[]>(`/api/prescriptions?search=${encodeURIComponent(query)}`);
+      const res = await get<Prescription[]>(`/prescriptions?search=${encodeURIComponent(query)}`);
       setPrescriptionResults(Array.isArray(res) ? res : (res as any).data || []);
       setShowPrescriptionDropdown(true);
     } catch (err) {
@@ -354,7 +354,7 @@ const POS: React.FC = () => {
         vat: vat,
       };
 
-      const result = await post<SaleResult>('/api/pos/sale', payload);
+      const result = await post<SaleResult>('/pos/sale', payload);
       setSaleResult({
         ...(result as any),
         id: (result as any).id || (result as any).data?.id || 0,
@@ -370,7 +370,7 @@ const POS: React.FC = () => {
       clearCart();
       toast.success('Sale completed successfully!');
     } catch (err: any) {
-      toast.error(err?.response?.data?.message || 'Failed to process sale');
+      toast.error(err?.message || 'Failed to process sale');
     } finally {
       setProcessing(false);
     }

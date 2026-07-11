@@ -73,7 +73,7 @@ export default function Settings() {
     const fetchSettings = async () => {
       setLoading(true)
       try {
-        const res = await get<{ settings: Record<string, string> }>('/api/settings')
+        const res = await get<{ settings: Record<string, string> }>('/settings')
         if (res.settings) {
           setSettings((prev) => {
             const updated = { ...prev }
@@ -107,7 +107,7 @@ export default function Settings() {
       Object.entries(settings).forEach(([key, value]) => {
         payload[key] = String(value)
       })
-      await put('/api/settings', { settings: payload })
+      await put('/settings', { settings: payload })
       toast.success('Settings saved successfully')
     } catch (err: any) {
       toast.error(err.message || 'Failed to save settings')

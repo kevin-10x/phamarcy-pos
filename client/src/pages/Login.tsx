@@ -36,7 +36,7 @@ export default function Login() {
     }
     setLoading(true)
     try {
-      const res = await post<AuthResponse>('/api/auth/login', { username, password })
+      const res = await post<AuthResponse>('/auth/login', { username, password })
       login(res.token, res.user)
       toast.success('Welcome back!')
       navigate('/pos')
@@ -63,7 +63,7 @@ export default function Login() {
     }
     setLoading(true)
     try {
-      const res = await post<AuthResponse>('/api/auth/register', {
+      const res = await post<AuthResponse>('/auth/register', {
         full_name: regName,
         username: regUsername,
         password: regPassword,
