@@ -1,5 +1,17 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthContext'
+import Login from './pages/Login'
+import Dashboard from './pages/Dashboard'
+import POS from './pages/POS'
+import Inventory from './pages/Inventory'
+import Customers from './pages/Customers'
+import Suppliers from './pages/Suppliers'
+import Prescriptions from './pages/Prescriptions'
+import Reports from './pages/Reports'
+import AIAssistant from './pages/AIAssistant'
+import Employees from './pages/Employees'
+import Settings from './pages/Settings'
+import Notifications from './pages/Notifications'
 
 function ProtectedRoute({ children, adminOnly = false }: { children: React.ReactNode; adminOnly?: boolean }) {
   const { user, isLoading } = useAuth()
@@ -23,46 +35,6 @@ function ProtectedRoute({ children, adminOnly = false }: { children: React.React
   return <>{children}</>
 }
 
-function Login() {
-  return <div>Login Page</div>
-}
-function Dashboard() {
-  return <div>Dashboard</div>
-}
-function POS() {
-  return <div>POS</div>
-}
-function Inventory() {
-  return <div>Inventory</div>
-}
-function Customers() {
-  return <div>Customers</div>
-}
-function Suppliers() {
-  return <div>Suppliers</div>
-}
-function Prescriptions() {
-  return <div>Prescriptions</div>
-}
-function Reports() {
-  return <div>Reports</div>
-}
-function AIAssistant() {
-  return <div>AI Assistant</div>
-}
-function Employees() {
-  return <div>Employees</div>
-}
-function Settings() {
-  return <div>Settings</div>
-}
-function Notifications() {
-  return <div>Notifications</div>
-}
-function Layout({ children }: { children: React.ReactNode }) {
-  return <div className="min-h-screen bg-slate-50">{children}</div>
-}
-
 export default function App() {
   return (
     <Routes>
@@ -71,9 +43,7 @@ export default function App() {
         path="/"
         element={
           <ProtectedRoute>
-            <Layout>
-              <Dashboard />
-            </Layout>
+            <Dashboard />
           </ProtectedRoute>
         }
       />
@@ -81,9 +51,7 @@ export default function App() {
         path="/pos"
         element={
           <ProtectedRoute>
-            <Layout>
-              <POS />
-            </Layout>
+            <POS />
           </ProtectedRoute>
         }
       />
@@ -91,9 +59,7 @@ export default function App() {
         path="/inventory"
         element={
           <ProtectedRoute>
-            <Layout>
-              <Inventory />
-            </Layout>
+            <Inventory />
           </ProtectedRoute>
         }
       />
@@ -101,9 +67,7 @@ export default function App() {
         path="/medicines"
         element={
           <ProtectedRoute>
-            <Layout>
-              <Inventory />
-            </Layout>
+            <Inventory />
           </ProtectedRoute>
         }
       />
@@ -111,9 +75,7 @@ export default function App() {
         path="/customers"
         element={
           <ProtectedRoute>
-            <Layout>
-              <Customers />
-            </Layout>
+            <Customers />
           </ProtectedRoute>
         }
       />
@@ -121,9 +83,7 @@ export default function App() {
         path="/suppliers"
         element={
           <ProtectedRoute>
-            <Layout>
-              <Suppliers />
-            </Layout>
+            <Suppliers />
           </ProtectedRoute>
         }
       />
@@ -131,9 +91,7 @@ export default function App() {
         path="/prescriptions"
         element={
           <ProtectedRoute>
-            <Layout>
-              <Prescriptions />
-            </Layout>
+            <Prescriptions />
           </ProtectedRoute>
         }
       />
@@ -141,9 +99,7 @@ export default function App() {
         path="/reports"
         element={
           <ProtectedRoute>
-            <Layout>
-              <Reports />
-            </Layout>
+            <Reports />
           </ProtectedRoute>
         }
       />
@@ -151,9 +107,7 @@ export default function App() {
         path="/ai"
         element={
           <ProtectedRoute>
-            <Layout>
-              <AIAssistant />
-            </Layout>
+            <AIAssistant />
           </ProtectedRoute>
         }
       />
@@ -161,9 +115,7 @@ export default function App() {
         path="/employees"
         element={
           <ProtectedRoute adminOnly>
-            <Layout>
-              <Employees />
-            </Layout>
+            <Employees />
           </ProtectedRoute>
         }
       />
@@ -171,9 +123,7 @@ export default function App() {
         path="/settings"
         element={
           <ProtectedRoute adminOnly>
-            <Layout>
-              <Settings />
-            </Layout>
+            <Settings />
           </ProtectedRoute>
         }
       />
@@ -181,9 +131,7 @@ export default function App() {
         path="/notifications"
         element={
           <ProtectedRoute>
-            <Layout>
-              <Notifications />
-            </Layout>
+            <Notifications />
           </ProtectedRoute>
         }
       />
