@@ -12,7 +12,7 @@ binding = "ASSETS"
 [[d1_databases]]
 binding = "DB"
 database_name = "pharmacy-pos-db"
-database_id = "placeholder-run-wrangler-d1-create"
+database_id = "19f3ca3b-9755-435f-87c9-54260d902f59"
 
 # Environment variables
 [vars]
